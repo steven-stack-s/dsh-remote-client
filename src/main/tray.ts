@@ -1,6 +1,5 @@
-import { Menu, Tray, nativeImage, session, type MenuItemConstructorOptions, type NativeImage } from 'electron'
-import { partitionNameFor } from './partitions.js'
-import { removeHost } from './hosts.js'
+import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron'
+import { buildHostMenuItems, clearHostLoginState, hostMenuLabel } from './host-menu.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 /** 托盘依赖，全部由主进程注入，便于隔离与测试。 */
@@ -21,6 +20,8 @@ export interface TrayDeps {
   onRetryNow: () => void
   /** 重新加载当前主机（丢弃被门户重定向后的页面，重新请求 host.origin）。 */
   onReload: () => void
+  /** 删除主机（实现侧负责弹确认框与善后）。 */
+  onRemoveHost: (host: HostEntry) => void
   /** 退出应用。 */
   onQuit: () => void
 }
@@ -119,43 +120,21 @@ export function createTray(deps: TrayDeps): Tray {
     tray.setImage(offline ? grayIcon : colorIcon)
     tray.setToolTip(offline ? 'dsh-remote-client（离线，正在重试）' : 'dsh-remote-client')
 
-    const hostItems: MenuItemConstructorOptions[] = data.hosts.map(host => {
-      const isCurrent = host.id === currentId
-      const submenu: MenuItemConstructorOptions[] = [
-        { label: '打开', click: () => { deps.openHost(host) } },
-      ]
-      // 「重新加载」只对当前已打开的主机有意义（要重新请求它的 origin），
-      // 与下面「立即重试」保持一致：非当前主机不显示，避免无意义操作。
-      if (isCurrent) {
-        submenu.push({ label: '重新加载', click: () => { deps.onReload() } })
-      }
-      // 仅当前主机且离线时提供「立即重试」，避免对未打开的窗口做无意义操作。
-      if (isCurrent && offline) {
-        submenu.push({ label: '立即重试', click: () => { deps.onRetryNow() } })
-      }
-      submenu.push(
-        {
-          label: '重置登录态',
-          click: () => {
-            void session.fromPartition(partitionNameFor(host.origin))
-              .clearStorageData()
-              .then(() => { rebuild() })
-          },
+    const hostItems: MenuItemConstructorOptions[] = data.hosts.map(host => ({
+      label: hostMenuLabel(host, currentId, offline),
+      // 子菜单内容由共享构造器生成，与应用菜单栏完全同源，避免两边漂移。
+      submenu: buildHostMenuItems(host, {
+        currentId,
+        offline,
+        openHost: h => { deps.openHost(h) },
+        onReload: () => { deps.onReload() },
+        onRetryNow: () => { deps.onRetryNow() },
+        onResetLogin: h => {
+          void clearHostLoginState(h).then(() => { rebuild() })
         },
-        { type: 'separator' },
-        {
-          label: '删除',
-          click: () => {
-            deps.setData(removeHost(data, host.id))
-            rebuild()
-          },
-        },
-      )
-      return {
-        label: `${host.id === currentId ? '● ' : '　'}${host.label}${host.id === currentId && offline ? '（离线）' : ''}`,
-        submenu,
-      }
-    })
+        onRemove: h => { deps.onRemoveHost(h) },
+      }),
+    }))
 
     const menu = Menu.buildFromTemplate([
       ...hostItems,

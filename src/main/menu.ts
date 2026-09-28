@@ -1,5 +1,6 @@
 import { Menu, app, type MenuItemConstructorOptions } from 'electron'
 import { canReloadHost, emptyHostsPlaceholder } from './menu-state.js'
+import { buildHostMenuItems, hostMenuLabel } from './host-menu.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 /**
@@ -18,6 +19,14 @@ export interface AppMenuDeps {
   onAddHost: () => void
   /** 重新加载当前主机（加载 host.origin，非当前 URL）。 */
   onReload: () => void
+  /** 当前主机是否离线（用于标签提示）。 */
+  isOffline: () => boolean
+  /** 立即重试当前主机。 */
+  onRetryNow: () => void
+  /** 清除指定主机的登录态。 */
+  onResetLogin: (host: HostEntry) => void
+  /** 删除指定主机（实现侧负责弹确认框与善后）。 */
+  onRemoveHost: (host: HostEntry) => void
   /** 退出应用。 */
   onQuit: () => void
 }
@@ -63,11 +72,22 @@ export function installAppMenu(deps: AppMenuDeps): AppMenuHandle {
   const rebuild = (): void => {
     const data = deps.getData()
     const currentId = deps.getCurrentId()
+    const offline = deps.isOffline()
 
     // 主机列表：当前主机带 ●，与托盘菜单的标记保持一致。
     const hostItems: MenuItemConstructorOptions[] = data.hosts.map(host => ({
-      label: `${host.id === currentId ? '● ' : '　'}${host.label}`,
-      click: () => { deps.openHost(host) },
+      label: hostMenuLabel(host, currentId, offline),
+      // 子菜单内容与托盘共用同一个构造器——托盘在 Windows 上可能不显示，
+      // 菜单栏是唯一入口，两者能力必须一致、不得各自漂移。
+      submenu: buildHostMenuItems(host, {
+        currentId,
+        offline,
+        openHost: h => { deps.openHost(h) },
+        onReload: () => { deps.onReload() },
+        onRetryNow: () => { deps.onRetryNow() },
+        onResetLogin: h => { deps.onResetLogin(h) },
+        onRemove: h => { deps.onRemoveHost(h) },
+      }),
     }))
 
     const placeholder = emptyHostsPlaceholder(data.hosts.length)

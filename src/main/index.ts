@@ -1,8 +1,10 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
-import { addHost, loadHosts, loadHostsSync, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { addHost, loadHosts, loadHostsSync, removeHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps } from './tray.js'
 import { installAppMenu, type AppMenuHandle } from './menu.js'
+import { clearHostLoginState } from './host-menu.js'
+import { shouldCloseWindowAfterRemove } from './menu-state.js'
 import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
@@ -110,6 +112,62 @@ async function persist(next: HostsFile): Promise<void> {
   refreshMenus()
 }
 
+/**
+ * 请求删除一台主机：先弹确认框，确认后才真正移除。
+ *
+ * 删除是不可撤销的（该主机的登录态 partition 会变成孤儿数据），因此必须
+ * 二次确认。默认按钮刻意设为「取消」——误按回车不应造成破坏。
+ *
+ * 菜单/托盘的点击回调是同步的，而 `showMessageBox` 返回 Promise，
+ * 故用 `void (async () => …)()` 包装，并把本函数设计成 async。
+ *
+ * @param host - 待删除的主机。
+ */
+async function requestRemoveHost(host: HostEntry): Promise<void> {
+  try {
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['取消', '删除'],
+      defaultId: 0,      // 默认「取消」：回车不会误删
+      cancelId: 0,       // Esc 亦视为取消
+      title: '删除主机',
+      message: `确定要删除「${host.label}」吗？`,
+      detail: `将从配置中移除该主机（${host.origin}）。\n`
+        + '其登录态数据（cookie 等）不再被使用，但不会立即从磁盘清除。\n'
+        + '此操作无法撤销。',
+      noLink: true,
+    })
+    // defaultId/cancelId 都是 0，因此只有显式点「删除」(index 1) 才继续。
+    if (response !== 1) return
+  } catch (error) {
+    // 确认框本身失败时不应静默删除：宁可什么都不做，也不能在没有用户
+    // 确认的情况下执行不可逆操作。
+    console.error('[dsh-remote-client] 删除确认框失败，已取消删除：', error)
+    return
+  }
+
+  const removedId = host.id
+  await persist(removeHost(hostsData, removedId))
+
+  // 删掉的正是当前打开的那台 → 关闭其窗口：配置里已无此主机，继续留着
+  // 会让主机列表与实际窗口不一致（用户会以为没删掉）。
+  if (shouldCloseWindowAfterRemove(removedId, currentHostId)) {
+    currentWindow?.win.destroy()
+    currentWindow = undefined
+    currentHostId = undefined
+  }
+  refreshMenus()
+}
+
+/** 清除一台主机的登录态。 */
+function resetHostLoginState(host: HostEntry): void {
+  void clearHostLoginState(host)
+    .then(() => { refreshMenus() })
+    .catch(error => {
+      console.error('[dsh-remote-client] 重置登录态失败：', error)
+    })
+}
+
 /** 装配托盘；只装配一次。失败被捕获并记录，绝不因此中断启动。 */
 function installTray(): void {
   if (tray !== undefined) return
@@ -123,6 +181,7 @@ function installTray(): void {
       isOffline: () => currentWindow?.isOffline() ?? false,
       onRetryNow: () => { currentWindow?.retryNow() },
       onReload: () => { currentWindow?.reload() },
+      onRemoveHost: host => { void requestRemoveHost(host) },
       onQuit: () => { app.quit() },
     }
     tray = createTray(deps)
@@ -144,6 +203,10 @@ function installAppMenuBar(): void {
       openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
       onAddHost: () => { openWelcomeWindow() },
       onReload: () => { currentWindow?.reload() },
+      isOffline: () => currentWindow?.isOffline() ?? false,
+      onRetryNow: () => { currentWindow?.retryNow() },
+      onResetLogin: host => { resetHostLoginState(host) },
+      onRemoveHost: host => { void requestRemoveHost(host) },
       onQuit: () => { app.quit() },
     })
   } catch (error) {

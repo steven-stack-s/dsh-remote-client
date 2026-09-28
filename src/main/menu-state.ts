@@ -42,3 +42,50 @@ export function canOpenHost(): boolean {
 export function emptyHostsPlaceholder(hostCount: number): string | undefined {
   return hostCount === 0 ? '（尚未添加主机）' : undefined
 }
+
+/**
+ * 「重置登录态」是否可用：必须存在该主机。
+ *
+ * 目前恒为 true（菜单项本就只对已存在的主机渲染），保留为纯函数是为了
+ * 把「菜单项的可用性只取决于主机是否存在」这条约定固化下来——若日后
+ * 出现「主机未打开时不允许重置」之类的规则，改动点集中在这里。
+ *
+ * @param hostExists - 目标主机是否仍存在于配置中。
+ * @returns 可用时返回 true。
+ */
+export function canResetLoginState(hostExists: boolean): boolean {
+  return hostExists
+}
+
+/**
+ * 「删除」是否可用。
+ *
+ * **刻意允许删除最后一台主机**：用户可能就是想清空重来（例如把所有主机
+ * 都换成新的部署）。托盘菜单底部有「添加主机…」，应用菜单栏的「文件」
+ * 菜单同样有「添加主机…」，因此删光之后**不会**陷入无法恢复的状态。
+ * 这条判定被显式固化，是为了防止日后有人「好心」禁用它而把用户困住。
+ *
+ * @param hostExists - 目标主机是否仍存在于配置中。
+ * @returns 可用时返回 true。
+ */
+export function canRemoveHost(hostExists: boolean): boolean {
+  return hostExists
+}
+
+/**
+ * 删除某主机后，是否应关闭当前主机窗口。
+ *
+ * 仅当被删主机**正是当前打开的那台**时才需要处理——窗口承载的是该主机的
+ * 会话，配置里已经没有它，继续留在屏幕上会让托盘/菜单里的主机列表与
+ * 实际窗口不一致（用户会以为没删掉）。删其他主机时当前窗口不受影响。
+ *
+ * @param removedId - 被删除的主机 id。
+ * @param currentHostId - 当前打开的主机 id。
+ * @returns 应关闭当前窗口时返回 true。
+ */
+export function shouldCloseWindowAfterRemove(
+  removedId: string,
+  currentHostId: string | undefined,
+): boolean {
+  return currentHostId !== undefined && removedId === currentHostId
+}
