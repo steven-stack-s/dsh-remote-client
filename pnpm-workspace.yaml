@@ -1,3 +1,16 @@
+# pnpm 的依赖构建脚本许可表（供应链安全）。
+#
+# 背景：pnpm 默认不执行依赖的 postinstall/build 脚本，需在此显式放行，
+# 否则 `pnpm install` 会警告并跳过——esbuild 这类需要构建的包会因此不可用。
+#
+# ⚠️ 这里的值必须是布尔字面量 true / false。
+# 之前本文件里 `electron-winstaller` 的值是 pnpm 交互式 `approve-builds`
+# 留下的提示文字「set this to true or false」，那不是合法值，会让
+# CI（以及任何干净环境）的 pnpm install 行为不可预期。
+
 allowBuilds:
-  electron-winstaller: set this to true or false
+  # esbuild 需要执行安装脚本以就位其平台二进制（vite / vitest 依赖它）。
   esbuild: true
+  # electron-builder 的 Squirrel.Windows 目标依赖它；本项目用 NSIS，不需要，
+  # 因此不放行其构建脚本（省时，也少一条供应链路径）。
+  electron-winstaller: false
