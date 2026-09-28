@@ -15,8 +15,8 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "dist:dir": "pnpm build && electron-builder --dir",
-    "dist:win": "pnpm build && electron-builder --win",
-    "dist:win:portable": "pnpm build && electron-builder --win portable"
+    "dist:win": "pnpm build && electron-builder --win --publish never",
+    "dist:win:portable": "pnpm build && electron-builder --win portable --publish never"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

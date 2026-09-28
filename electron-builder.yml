@@ -23,6 +23,12 @@ files:
 # 把代码收进 asar，避免最终用户误改，也更快。
 asar: true
 
+# 本项目 dependencies 为空（主进程与 preload 已被 electron-vite 打成单文件，
+# electron 由运行时提供），**没有任何原生模块需要针对 Electron ABI 重建**。
+# 显式关掉可跳过 @electron/rebuild 流程：省时间，也避免在 Windows 上
+# 因缺少编译工具链而失败。
+npmRebuild: false
+
 win:
   # electron-builder 会从这张 256×256 PNG 自动生成多尺寸 .ico
   icon: build/icon.png
