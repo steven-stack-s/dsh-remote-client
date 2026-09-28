@@ -1,4 +1,4 @@
-import { Menu, Tray, nativeImage, session, type MenuItemConstructorOptions } from 'electron'
+import { Menu, Tray, nativeImage, session, type MenuItemConstructorOptions, type NativeImage } from 'electron'
 import { partitionNameFor } from './partitions.js'
 import { removeHost } from './hosts.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
@@ -46,6 +46,58 @@ const TRAY_ICON_COLOR =
  */
 const TRAY_ICON_GRAY =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAyUlEQVR42s2XsQ3FIAwFMwG7sQKz0Lm1W5eZhV08A8pvQEIRkcInYBfXREHvFBywD0A+NBld4AGZADkBsgByLkh5RuWdTwUcIMcScr1Eyho3KxAGg3si4V8Bmgi+Q6MC54fhlfOtAC0If/wSvT2/FhOeBNxkwY0UpusJxA3hldgTkI0CchfwG8MrvhUgBQFqBZKCQGoFREFAWoGsIJBNCahvgXoRqv+G6geR+lFs4jJSv47VGxITLZmJptREW25iMDExmpkYTpfyA6+QtEDFdUpOAAAAAElFTkSuQmCC'
+/**
+ * 16×16 版本，供 Windows 的小图标槽位使用。
+ *
+ * Windows 托盘在 100% 缩放下取 16×16、在高 DPI 下取 32×32。只提供 32×32
+ * 时系统会自行缩放，边缘容易发虚；同时给出两档可让 Windows 直接选用。
+ */
+const TRAY_ICON_COLOR_16 =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAdklEQVR42mPw6f7KgAVL+HR/jfLp/loNxVFQMQy12DTO9en++h8HnotuELJmS5/ur0/waIbhJ1C1KAZIEKkZ2RAJZAPmkqAZ2TsMMNv/k4klGKAhTK4BUQzQaCLXgGqqGECxFygORIqjkSoJieKkTJXMRFZ2BgBX0HyXdU5YNgAAAABJRU5ErkJggg=='
+const TRAY_ICON_GRAY_16 =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAdUlEQVR42q2Tuw3AMAhEGYNVsopX8Qi0tDCd93AaLOHEiRJwcQ3iHuIHxAoLIbEWYq2mYrFb7sooxNofJFeQNx/E2l7MQ81yJwB+NHsIeoD8MPt2YFTvQSHYhKOAAramKKBuAaRbSA8xvcYth5Q+5S3PFHrnE2yObZc3fkp9AAAAAElFTkSuQmCC'
+
+/**
+ * 从 data URL 解析图标，失败时给出可诊断的日志。
+ *
+ * `createFromDataURL` 在解析失败时**返回空图而非抛异常**（Electron 行为），
+ * 而空图在 Windows 上正是导致托盘项不可见的原因之一。因此这里显式检查
+ * `isEmpty()` 并报错——绝不能让图标问题再次以「静默不显示」的形式出现。
+ *
+ * @param dataUrl - 内联 PNG 的 data URL。
+ * @param name - 图标名，用于日志。
+ * @returns 解析出的图像（可能为空图，调用方需自行决定如何处理）。
+ */
+function iconFromDataUrl(dataUrl: string, name: string): NativeImage {
+  const image = nativeImage.createFromDataURL(dataUrl)
+  if (image.isEmpty()) {
+    console.error(`[dsh-remote-client] 托盘图标解析为空图（${name}）：Windows 上会导致托盘项不可见。`)
+  }
+  return image
+}
+
+/**
+ * 组合 16×16 与 32×32 两档表示，供 Windows 按 DPI 选用。
+ *
+ * `addRepresentation` 让同一个 NativeImage 携带多个尺寸；Windows 在
+ * 100% 缩放下取 16×16、高 DPI 下取 32×32。只给 32×32 时系统会自行
+ * 缩放，小图标槽位下边缘会发虚。
+ *
+ * @param smallDataUrl - 16×16 的 data URL。
+ * @param largeDataUrl - 32×32 的 data URL。
+ * @param name - 图标名，用于日志。
+ * @returns 带两档表示的图像。
+ */
+function multiSizeIcon(smallDataUrl: string, largeDataUrl: string, name: string): NativeImage {
+  const image = iconFromDataUrl(largeDataUrl, `${name}(32)`)
+  const small = iconFromDataUrl(smallDataUrl, `${name}(16)`)
+  if (!small.isEmpty()) {
+    // 用 dataURL 而非 buffer：类型定义里 buffer 明确是「raw image data」，
+    // 而 dataURL 才是有文档保证的「base64 编码 PNG/JPEG」路径。
+    image.addRepresentation({ scaleFactor: 1, dataURL: smallDataUrl })
+  }
+  return image
+}
 
 /**
  * 创建托盘。菜单每次弹出前重建，因此始终反映最新配置。
@@ -54,8 +106,8 @@ const TRAY_ICON_GRAY =
  * @returns 托盘实例（调用方需保留引用，否则会被回收导致图标消失）。
  */
 export function createTray(deps: TrayDeps): Tray {
-  const colorIcon = nativeImage.createFromDataURL(TRAY_ICON_COLOR)
-  const grayIcon = nativeImage.createFromDataURL(TRAY_ICON_GRAY)
+  const colorIcon = multiSizeIcon(TRAY_ICON_COLOR_16, TRAY_ICON_COLOR, 'color')
+  const grayIcon = multiSizeIcon(TRAY_ICON_GRAY_16, TRAY_ICON_GRAY, 'gray')
   const tray = new Tray(colorIcon)
 
   const rebuild = (): void => {

@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { addHost, loadHosts, loadHostsSync, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps } from './tray.js'
+import { installAppMenu, type AppMenuHandle } from './menu.js'
 import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
@@ -50,9 +51,17 @@ function openWelcomeWindow(): void {
   win.on('closed', () => { welcomeWebContentsIds.delete(id) })
 }
 
-/** 重建托盘菜单（若托盘已装配）。 */
-function refreshTrayMenu(): void {
+/** 应用菜单句柄；装配后据此重建。 */
+let appMenu: AppMenuHandle | undefined
+
+/**
+ * 同时重建托盘菜单与应用菜单。
+ *
+ * 主机增删/切换后必须两条通道都刷新，否则菜单栏会显示过期的主机列表。
+ */
+function refreshMenus(): void {
   ;(tray as unknown as { rebuildMenu?: () => void } | undefined)?.rebuildMenu?.()
+  appMenu?.rebuild()
 }
 
 /**
@@ -83,7 +92,7 @@ function openHost(host: HostEntry): void {
         currentWindow?.win.setTitle(`${host.label} — ${title}`)
       }
     },
-    () => { refreshTrayMenu() },
+    () => { refreshMenus() },
     () => quitting,
   )
   currentWindow.win.on('closed', () => { currentWindow = undefined })
@@ -97,43 +106,97 @@ function openHost(host: HostEntry): void {
 async function persist(next: HostsFile): Promise<void> {
   hostsData = next
   await saveHosts(dataDir, next)
-  refreshTrayMenu()
+  refreshMenus()
 }
 
-/** 装配托盘；只装配一次。 */
+/** 装配托盘；只装配一次。失败被捕获并记录，绝不因此中断启动。 */
 function installTray(): void {
   if (tray !== undefined) return
-  const deps: TrayDeps = {
-    getData: () => hostsData,
-    setData: next => { void persist(next) },
-    getCurrentId: () => currentHostId,
-    openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
-    onAddHost: () => { openWelcomeWindow() },
-    isOffline: () => currentWindow?.isOffline() ?? false,
-    onRetryNow: () => { currentWindow?.retryNow() },
-    onReload: () => { currentWindow?.reload() },
-    onQuit: () => { app.quit() },
+  try {
+    const deps: TrayDeps = {
+      getData: () => hostsData,
+      setData: next => { void persist(next) },
+      getCurrentId: () => currentHostId,
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
+      onAddHost: () => { openWelcomeWindow() },
+      isOffline: () => currentWindow?.isOffline() ?? false,
+      onRetryNow: () => { currentWindow?.retryNow() },
+      onReload: () => { currentWindow?.reload() },
+      onQuit: () => { app.quit() },
+    }
+    tray = createTray(deps)
+  } catch (error) {
+    // 托盘可能因平台限制、图标无效等原因创建失败。绝不能静默吞掉：
+    // 用户真机上「托盘不出现」曾因此完全无法诊断。应用菜单栏是兜底入口，
+    // 因此这里失败不应影响后续启动流程。
+    console.error('[dsh-remote-client] 托盘创建失败，将仅提供应用菜单栏：', error)
   }
-  tray = createTray(deps)
+}
+
+/** 装配应用菜单栏；只装配一次。这是不依赖托盘的兜底入口。 */
+function installAppMenuBar(): void {
+  if (appMenu !== undefined) return
+  try {
+    appMenu = installAppMenu({
+      getData: () => hostsData,
+      getCurrentId: () => currentHostId,
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
+      onAddHost: () => { openWelcomeWindow() },
+      onReload: () => { currentWindow?.reload() },
+      onQuit: () => { app.quit() },
+    })
+  } catch (error) {
+    console.error('[dsh-remote-client] 应用菜单装配失败：', error)
+  }
+}
+
+/**
+ * 装配所有「入口」UI（应用菜单栏 + 托盘）。
+ *
+ * **必须在 boot() 的最前面调用**：这两者是用户管理主机的通道，其中应用
+ * 菜单栏还承担「托盘不可见时」的兜底职责。早先版本把托盘装配放在
+ * openHost() 之后，一旦前面的读配置/写配置/开窗任何一步抛异常，入口就
+ * 永远不会出现——用户会看到窗口打开了却没有任何管理入口（真机反馈正是如此）。
+ */
+function installShellChrome(): void {
+  installAppMenuBar()
+  installTray()
 }
 
 async function boot(): Promise<void> {
-  const data = await loadHosts(dataDir)
-  const host = resolveStartupHost(data)
+  // 先装配入口，再做任何可能失败的事（读/写配置、开窗），并整体兜底。
+  installShellChrome()
 
-  if (host === undefined) {
-    // 无主机：先装配托盘（否则用户无法管理主机），再开欢迎页。
+  try {
+    const data = await loadHosts(dataDir)
+    const host = resolveStartupHost(data)
+
+    if (host === undefined) {
+      // 无主机：打开欢迎页让用户添加第一台。
+      hostsData = data
+      refreshMenus()
+      openWelcomeWindow()
+      return
+    }
+
     hostsData = data
-    installTray()
-    openWelcomeWindow()
-    return
+    currentHostId = host.id
+    await saveHosts(dataDir, touchHost(data, host.id))
+    openHost(host)
+    refreshMenus()
+  } catch (error) {
+    // 启动过程中任何一步失败都不应让用户面对一个「什么都没有」的应用：
+    // 入口已装配，这里把原因显式呈现出来并记录。
+    console.error('[dsh-remote-client] 启动流程失败：', error)
+    try {
+      createOfflineWindow(
+        'dsh-remote-client',
+        `启动失败：${error instanceof Error ? error.message : String(error)}`,
+      )
+    } catch (fallbackError) {
+      console.error('[dsh-remote-client] 离线窗口亦无法打开：', fallbackError)
+    }
   }
-
-  hostsData = data
-  currentHostId = host.id
-  await saveHosts(dataDir, touchHost(data, host.id))
-  openHost(host)
-  installTray()
 }
 
 // 标题走 windows.ts 的 page-title-updated 原生事件这一条路径；
@@ -180,7 +243,12 @@ ipcMain.handle('shell:restart', event => {
 // 托盘「退出」与系统退出都会经过这里。
 app.on('before-quit', () => { quitting = true })
 
-void app.whenReady().then(boot)
+// boot() 内部已 try/catch，但这里仍补一个 catch：早先版本是裸的
+// `whenReady().then(boot)`，boot 里任何未捕获异常都会变成**静默的**
+// unhandled rejection——这正是用户真机上「托盘不出现却毫无线索」的原因。
+void app.whenReady().then(boot).catch(error => {
+  console.error('[dsh-remote-client] 启动失败：', error)
+})
 
 app.on('activate', () => {
   // macOS 语义：点 Dock 图标时，若窗口被隐藏则唤起，若都关掉了则重开。
@@ -188,7 +256,11 @@ app.on('activate', () => {
     currentWindow.show()
     return
   }
-  if (BrowserWindow.getAllWindows().length === 0) void boot()
+  if (BrowserWindow.getAllWindows().length === 0) {
+    void boot().catch(error => {
+      console.error('[dsh-remote-client] 重新启动窗口失败：', error)
+    })
+  }
 })
 
 // 主机窗口在非 darwin 平台关窗时只会被隐藏，因此本事件在那条路径上不会触发；
