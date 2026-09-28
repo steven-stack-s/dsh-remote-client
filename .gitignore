@@ -3,3 +3,10 @@ dist/
 out/
 *.log
 .DS_Store
+
+# 受限沙箱（DSH workspace-write 文件策略）下 TMPDIR 指向沙箱外、不可写，
+# 测试运行时把临时目录落到这里。普通开发机不需要。
+.tmp/
+
+# pnpm store 改道配置：含本机绝对路径，只对当前沙箱有效，不入库。
+.npmrc
