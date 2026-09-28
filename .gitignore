@@ -4,9 +4,14 @@ out/
 *.log
 .DS_Store
 
+# 打包产物：setup.exe 约 106MB，绝不入库。
+# 分发给最终用户应走 GitHub Release（见 .github/workflows/build-windows.yml）。
+release/
+
 # 受限沙箱（DSH workspace-write 文件策略）下 TMPDIR 指向沙箱外、不可写，
 # 测试运行时把临时目录落到这里。普通开发机不需要。
 .tmp/
 
-# pnpm store 改道配置：含本机绝对路径，只对当前沙箱有效，不入库。
+# 含本机绝对路径或镜像配置，不入库。
+# 构建脚本会按需重建它。
 .npmrc

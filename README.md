@@ -56,15 +56,58 @@ pnpm dev         # 启动客户端（需要图形环境）
 - **cookie 名绑定 authority**（`dsh-auth-` + `sha256(authority)`），因此换 IP / 换域名访问会被视为**新主机**，需要重新登录。
 - `unsafely-treat-insecure-origin-as-secure` **只能在启动时设置**，所以运行时新增 `http://` 主机后需重启客户端生效；`https://` 主机不受影响。
 - 明文 HTTP 链路上 dsh 的会话 cookie 不带 `Secure` 属性，跨网络部署建议配 HTTPS 反向代理。
-- 托盘图标目前是 `nativeImage.createEmpty()` **空图占位**，因此「离线时图标变灰」无法实现，降级为 tooltip + 菜单「（离线）」标注 +「立即重试」项。
 - 原生通知（审批请求 / 任务完成）尚未实现，属于阶段 2。
 - 重命名主机推迟到阶段 2（添加主机时可填显示名，默认取 origin 去掉协议前缀）。
+- **安装包未做代码签名**，最终用户首次运行会遇到 SmartScreen「未知发布者」提示（见下）。
+
+---
+
+## 安装与分发
+
+### 给最终用户
+
+下载 `DSH Remote Client-<版本>-setup.exe`，双击安装即可。
+
+**不需要安装 Node、pnpm 或任何运行环境** —— Electron 运行时已打进安装包（约 106MB）。
+
+安装向导支持自选安装位置、创建桌面与开始菜单快捷方式，**不需要管理员权限**（装到当前用户目录）。卸载时**保留**主机配置与登录态，重装后无需重新配置。
+
+> ⚠️ 安装包**未做代码签名**，Windows SmartScreen 会提示「未知发布者」。
+> 点「更多信息」→「仍要运行」即可。若要消除该提示，需要购买代码签名证书，
+> 在 `electron-builder.yml` 里配置 `win.certificateFile` / `certificatePassword`。
+
+### 构建安装包
+
+**方式一：GitHub Actions（推荐，无需任何本地环境）**
+
+推一个 tag 即自动构建并发布到 Release：
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+也可在仓库 Actions 页面手动触发 `workflow_dispatch`，产物在 Actions 的 Artifacts 里下载。
+见 [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)。
+
+**方式二：本地构建（Linux 或 Windows）**
+
+```bash
+./scripts/build-windows.sh
+```
+
+该脚本固化了在 Linux 上交叉构建 Windows 包时实际踩到的四个坑（Node ≥ 22.12、
+必须有 wine、二进制工具需走镜像、`pnpm install --force` 解决平台绑定缺失），
+详见脚本头部注释。**在 Windows 本机构建则不需要 wine。**
+
+产物：`release/DSH Remote Client-<版本>-setup.exe`。
+
+---
 
 ## 状态
 
-阶段 1（核心链路）：多主机配置与切换、登录态隔离与保持、直载窗口、离线覆盖页与**指数退避自动重连**（1s→2s→…→30s，网络恢复即刻重试）、托盘管理。
+阶段 1（核心链路）：多主机配置与切换、登录态隔离与保持、直载窗口、离线覆盖页与**指数退避自动重连**（1s→2s→…→30s，网络恢复即刻重试）、托盘管理（含「离线变灰」与关窗驻留）、**Windows 安装包**。
 
-阶段 2（计划中）：原生通知、launch token 免插件接入、应用图标、主机重命名。
+阶段 2（计划中）：原生通知、launch token 免插件接入、主机重命名。
 
 设计规格见 [`docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md`](docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md)（§14 记录了实现期发现并修复的 8 个真实缺陷），
 实施计划见 [`docs/superpowers/plans/2026-09-28-stage1-core.md`](docs/superpowers/plans/2026-09-28-stage1-core.md)。

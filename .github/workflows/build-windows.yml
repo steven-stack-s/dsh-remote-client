@@ -1,0 +1,89 @@
+name: 构建 Windows 安装包
+
+# 为什么用 CI 构建而不是本地构建：
+#   1. 在 Windows runner 上原生构建，避免 Linux 交叉构建时的 wine 依赖与
+#      二进制工具下载超时问题；
+#   2. 你（维护者）也无需在本地安装 Node / pnpm / 构建工具链；
+#   3. 产物直接挂到 GitHub Release，最终用户点开就能下载安装。
+#
+# 最终用户拿到的 setup.exe 自带完整 Electron 运行时，
+# **不需要安装 Node、pnpm 或任何运行环境**。
+
+on:
+  # 打 tag 即发布（如 git tag v0.1.0 && git push origin v0.1.0）
+  push:
+    tags:
+      - 'v*'
+  # 也可在 Actions 页面手动触发，用于试构建
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查与测试
+        run: |
+          pnpm typecheck
+          pnpm test
+
+      - name: 构建安装包
+        run: pnpm dist:win
+
+      - name: 收集产物信息
+        id: artifact
+        shell: bash
+        run: |
+          ls -la release/
+          echo "setup=$(ls release/*.exe | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: 上传构建产物（手动触发时可在 Actions 页面下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: release/*.exe
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release（仅 tag 触发时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.exe
+          generate_release_notes: true
+          body: |
+            ## 安装
+
+            下载下面的 `DSH Remote Client-*-setup.exe`，双击安装即可。
+
+            **不需要安装 Node、pnpm 或任何运行环境** —— Electron 运行时已打进安装包。
+
+            ### 首次使用
+
+            1. 打开客户端，在「添加 dsh 主机」窗口填入你的 dsh 地址
+               （本机 Docker 部署填 `http://127.0.0.1:3080`）
+            2. 若使用局域网 IP 或域名，远端需先配置 `DSH_TRUSTED_HOSTS`，
+               或安装 `@xgone/dsh-remote` 认证插件
+            3. 关闭窗口 = 最小化到系统托盘（不是退出）；退出请用托盘菜单的「退出」
+
+            > ⚠️ 安装包未做代码签名，Windows SmartScreen 可能提示「未知发布者」。
+            > 点「更多信息」→「仍要运行」即可。介意的话可自行配置签名证书。

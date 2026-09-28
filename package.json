@@ -13,11 +13,15 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dist:dir": "pnpm build && electron-builder --dir",
+    "dist:win": "pnpm build && electron-builder --win",
+    "dist:win:portable": "pnpm build && electron-builder --win portable"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
     "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.1",

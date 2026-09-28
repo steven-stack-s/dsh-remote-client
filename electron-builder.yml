@@ -1,0 +1,56 @@
+# electron-builder 打包配置
+#
+# 目标：产出一个 Windows 安装包，最终用户双击安装即可用，
+# **无需安装 Node、pnpm 或任何运行环境**——Electron 运行时被打进安装包。
+#
+# 构建前置：先跑 `pnpm build`（electron-vite 产出 out/），再跑 `pnpm dist:win`。
+
+appId: com.stevenstack.dshremoteclient
+productName: DSH Remote Client
+copyright: MIT Licensed
+
+directories:
+  buildResources: build
+  output: release
+
+# 只打包构建产物。dependencies 为空（electron-vite 已把主进程与 preload
+# 打成单文件，electron 本身由运行时提供），所以无需收集 node_modules。
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+
+# 把代码收进 asar，避免最终用户误改，也更快。
+asar: true
+
+win:
+  # electron-builder 会从这张 256×256 PNG 自动生成多尺寸 .ico
+  icon: build/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # 未签名：最终用户首次运行会看到 SmartScreen 警告（见 README「安装与分发」）。
+  # 若要消除，需配置证书：在配置里补 certificateFile / certificatePassword。
+  artifactName: ${productName}-${version}-setup.${ext}
+
+nsis:
+  # 面向最终用户的安装体验：
+  #   oneClick: false → 给出安装向导而非静默安装（用户能看到在做什么）
+  #   perMachine: false → 装到当前用户目录，**不需要管理员权限**
+  #   allowToChangeInstallationDirectory → 可自选安装位置
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: DSH Remote Client
+  # 卸载时保留用户数据（hosts.json 里的主机配置与各主机的登录态），
+  # 重装后无需重新配置。这与「登录态长期保持」的承诺一致。
+  deleteAppDataOnUninstall: false
+  # 中文安装界面
+  installerLanguages:
+    - zh_CN
+    - en_US
+  language: '2052'
