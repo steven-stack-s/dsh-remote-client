@@ -42,23 +42,29 @@
 
 ```bash
 pnpm install
-pnpm test        # 纯逻辑单测（origin 规范化、主机配置、partition 命名）
+pnpm test        # 构建 + 全部测试（含构建产物断言）
+pnpm test:unit   # 只跑单测（快速回路，不含构建）
+pnpm test:build  # 只跑构建产物断言
 pnpm typecheck
 pnpm dev         # 启动客户端（需要图形环境）
 ```
+
+> `pnpm test` 刻意**包含构建**。阶段 1 暴露过一个真实教训：42 个单测全绿、typecheck 退出码 0 的同时，构建产物是坏的（`out/renderer/` 未生成、preload 内联了整个 npm `electron` 包）。单测与类型检查都覆盖不到构建布局与产物形态，所以 `tests/build-artifacts.test.ts` 专门断言产物结构与 preload 形态，并接进了标准验证命令。
 
 ## 已知限制
 
 - **cookie 名绑定 authority**（`dsh-auth-` + `sha256(authority)`），因此换 IP / 换域名访问会被视为**新主机**，需要重新登录。
 - `unsafely-treat-insecure-origin-as-secure` **只能在启动时设置**，所以运行时新增 `http://` 主机后需重启客户端生效；`https://` 主机不受影响。
 - 明文 HTTP 链路上 dsh 的会话 cookie 不带 `Secure` 属性，跨网络部署建议配 HTTPS 反向代理。
-- 托盘图标目前是空图占位。
+- 托盘图标目前是 `nativeImage.createEmpty()` **空图占位**，因此「离线时图标变灰」无法实现，降级为 tooltip + 菜单「（离线）」标注 +「立即重试」项。
 - 原生通知（审批请求 / 任务完成）尚未实现，属于阶段 2。
+- 重命名主机推迟到阶段 2（添加主机时可填显示名，默认取 origin 去掉协议前缀）。
 
 ## 状态
 
-阶段 1（核心链路）：多主机配置与切换、登录态隔离与保持、直载窗口、离线恢复页。
-阶段 2（计划中）：原生通知、launch token 免插件接入、应用图标。
+阶段 1（核心链路）：多主机配置与切换、登录态隔离与保持、直载窗口、离线覆盖页与**指数退避自动重连**（1s→2s→…→30s，网络恢复即刻重试）、托盘管理。
 
-设计规格见 [`docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md`](docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md)，
+阶段 2（计划中）：原生通知、launch token 免插件接入、应用图标、主机重命名。
+
+设计规格见 [`docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md`](docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md)（§14 记录了实现期发现并修复的 8 个真实缺陷），
 实施计划见 [`docs/superpowers/plans/2026-09-28-stage1-core.md`](docs/superpowers/plans/2026-09-28-stage1-core.md)。
