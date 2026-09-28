@@ -24,22 +24,45 @@ export interface TrayDeps {
 }
 
 /**
+ * 托盘图标：32×32 品牌蓝（#4c8bf5）实心圆。
+ *
+ * 内联 base64 而非引用资源文件，是为避免打包时资源路径解析的复杂度——
+ * 阶段 1 尚未引入 electron-builder，任何 `resources/` 目录在 dev 与打包
+ * 两种形态下路径不同，容易再次踩到「产物里缺文件」的坑。
+ *
+ * 注意：**Windows 托盘需要有效图像**，`nativeImage.createEmpty()` 会导致
+ * 托盘项完全不出现；而托盘是主机管理的唯一入口，因此这不是外观问题。
+ */
+const TRAY_ICON_COLOR =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAyklEQVR42s2XsQ3FIAwFMwGTuWEFZqFz7RUyC7u4donyG5BQRKTwCdjFNVHQOwUH7ANQDk1GF3hAIUBJgMKAkgtcnlF551MBByixhFwv4bLGzQqEweCeSPhXgCaC79CowPlheOV8K0ALwh+/RG/Pr8WEJwE3WXAjhel6AnFDeCX2BHijAN8F/Mbwim8FSEGAWoGkIJBaAVYQ4FYgKwhkUwLqW6BehOq/ofpBpH4Um7iM1K9j9YbEREtmoik10ZabGExMjGYmhtOl/ABRzvBAa2onSgAAAABJRU5ErkJggg=='
+
+/**
+ * 离线态图标：同几何形状的灰色（#8b949e）版本。
+ *
+ * 有了真实图标后，规格 §8 的「离线时托盘图标变灰」才真正可做：
+ * 切换两个不同的图像，而不是像早先那样只能降级为 tooltip 文案。
+ */
+const TRAY_ICON_GRAY =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAyUlEQVR42s2XsQ3FIAwFMwG7sQKz0Lm1W5eZhV08A8pvQEIRkcInYBfXREHvFBywD0A+NBld4AGZADkBsgByLkh5RuWdTwUcIMcScr1Eyho3KxAGg3si4V8Bmgi+Q6MC54fhlfOtAC0If/wSvT2/FhOeBNxkwY0UpusJxA3hldgTkI0CchfwG8MrvhUgBQFqBZKCQGoFREFAWoGsIJBNCahvgXoRqv+G6geR+lFs4jJSv47VGxITLZmJptREW25iMDExmpkYTpfyA6+QtEDFdUpOAAAAAElFTkSuQmCC'
+
+/**
  * 创建托盘。菜单每次弹出前重建，因此始终反映最新配置。
  *
  * @param deps - 主进程注入的依赖。
  * @returns 托盘实例（调用方需保留引用，否则会被回收导致图标消失）。
  */
 export function createTray(deps: TrayDeps): Tray {
-  // 用一个 1×1 空图占位；正式图标在阶段 2 补齐资源文件。
-  const tray = new Tray(nativeImage.createEmpty())
+  const colorIcon = nativeImage.createFromDataURL(TRAY_ICON_COLOR)
+  const grayIcon = nativeImage.createFromDataURL(TRAY_ICON_GRAY)
+  const tray = new Tray(colorIcon)
 
   const rebuild = (): void => {
     const data = deps.getData()
     const currentId = deps.getCurrentId()
     const offline = deps.isOffline()
 
-    // 规格 §8 要求离线时托盘图标变灰。阶段 1 用的是空图占位，
-    // 无法真正改变外观，故降级为 tooltip 文案提示（见下面 setToolTip）。
+    // 规格 §8：离线时托盘图标变灰，并辅以 tooltip 文案。
+    tray.setImage(offline ? grayIcon : colorIcon)
     tray.setToolTip(offline ? 'dsh-remote-client（离线，正在重试）' : 'dsh-remote-client')
 
     const hostItems: MenuItemConstructorOptions[] = data.hosts.map(host => {

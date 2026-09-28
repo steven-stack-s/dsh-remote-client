@@ -2,6 +2,7 @@ import { BrowserWindow, shell } from 'electron'
 import { join } from 'node:path'
 import { partitionNameFor } from './partitions.js'
 import { backoffDelay } from './backoff.js'
+import { shouldHideOnClose } from './lifecycle.js'
 import type { HostEntry } from '../shared/types.js'
 
 /**
@@ -29,6 +30,8 @@ export interface HostWindowHandle {
   isOffline: () => boolean
   /** 立即重试（供「网络恢复」或托盘手动触发）。 */
   retryNow: () => void
+  /** 显示并聚焦窗口（供托盘「打开」在窗口被隐藏时唤起）。 */
+  show: () => void
 }
 
 /**
@@ -40,12 +43,14 @@ export interface HostWindowHandle {
  * @param host - 目标主机。
  * @param onTitle - 页面标题变化回调，供窗口标题与托盘显示当前会话。
  * @param onOfflineChange - 离线状态变化回调，供托盘更新提示。
+ * @param isQuitting - 应用是否正在真正退出；退出时放行 close，其余情况隐藏。
  * @returns 窗口句柄，调用方据此控制重试与查询状态。
  */
 export function createHostWindow(
   host: HostEntry,
   onTitle: (title: string) => void,
   onOfflineChange: (offline: boolean) => void = () => undefined,
+  isQuitting: () => boolean = () => false,
 ): HostWindowHandle {
   const win = new BrowserWindow({
     width: 1280,
@@ -60,6 +65,15 @@ export function createHostWindow(
 
   win.on('page-title-updated', (_event, title) => { onTitle(title) })
 
+  // Windows/Linux 上拦截关窗并改为隐藏，使托盘与其管理入口继续存活——
+  // 用户在能力选择里勾的「关窗后仍能被唤起」依赖这一点。应用真正退出时
+  // 放行，避免卡住退出流程；darwin 保持既有语义（见 lifecycle.ts）。
+  win.on('close', event => {
+    if (!shouldHideOnClose({ kind: 'host', platform: process.platform, quitting: isQuitting() })) return
+    event.preventDefault()
+    win.hide()
+  })
+
   // 外部链接交给系统浏览器，绝不在壳内开新窗口。
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
@@ -71,6 +85,8 @@ export function createHostWindow(
   let ticker: NodeJS.Timeout | undefined
   let offline = false
   let disposed = false
+  /** 最近一次失败的描述，用于窗口被重新唤起时恢复重试。 */
+  let lastFailureDetail = ''
 
   /** 停止待执行的重试与倒计时，避免窗口销毁后仍有幽灵请求或标题残留。 */
   const stopTimer = (): void => {
@@ -90,9 +106,22 @@ export function createHostWindow(
     onOfflineChange(next)
   }
 
-  /** 安排下一次重试，并把倒计时写进标题。 */
+  /**
+   * 安排下一次重试，并把倒计时写进标题。
+   *
+   * 窗口处于隐藏态（用户关窗后驻留托盘）时不安排重试：隐藏 ≠ 关闭，
+   * 否则一个被收进托盘、目标又不可达的窗口会永远在后台空转。
+   * 重新 show 时由下方 show 事件恢复重试。
+   */
   const scheduleRetry = (detail: string): void => {
     if (disposed || win.isDestroyed()) return
+    lastFailureDetail = detail
+    if (!win.isVisible()) {
+      // 仍显示离线页让用户唤起时能看到原因，但不启动定时器。
+      void win.loadFile(OFFLINE_PAGE, { query: { detail } })
+      win.setTitle(`${host.label} — 离线`)
+      return
+    }
     // 上一次重试的倒计时必须先停，否则每失败一轮就多一个永不停止的
     // interval 在改写标题（子串匹配的旧值残留）。
     stopTimer()
@@ -116,6 +145,12 @@ export function createHostWindow(
       void win.loadURL(host.origin)
     }, delay)
   }
+
+  // 重新唤起时，若仍处于离线态则恢复重试（隐藏期间被暂停了）。
+  win.on('show', () => {
+    if (disposed || !offline || timer !== undefined) return
+    scheduleRetry(lastFailureDetail)
+  })
 
   // 连不上时切到离线页并进入退避重试，而不是让 Chromium 显示自己的错误页。
   win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -144,7 +179,17 @@ export function createHostWindow(
   })
 
   void win.loadURL(host.origin)
-  return { win, isOffline: () => offline, retryNow }
+  return {
+    win,
+    isOffline: () => offline,
+    retryNow,
+    // 窗口可能处于隐藏态（用户关窗后驻留），唤起时必须先 show 再 focus。
+    show: () => {
+      if (win.isDestroyed()) return
+      win.show()
+      win.focus()
+    },
+  }
 }
 
 /**

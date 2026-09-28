@@ -56,11 +56,23 @@ function refreshTrayMenu(): void {
 }
 
 /**
- * 打开一台主机，并关闭此前的主机窗口。
+ * 应用是否正在真正退出。由 `before-quit` 置位，供窗口 `close` 判定放行——
+ * 否则非 darwin 平台的关窗拦截会把退出流程卡死。
+ */
+let quitting = false
+
+/**
+ * 打开一台主机。若该主机窗口已存在（可能被隐藏），直接唤起而不重建，
+ * 避免同一 origin 并存两份 WebSocket；切换主机时才销毁旧窗口。
  *
  * @param host - 目标主机。
  */
 function openHost(host: HostEntry): void {
+  if (currentWindow !== undefined && currentHostId === host.id && !currentWindow.win.isDestroyed()) {
+    currentWindow.show()
+    return
+  }
+  // destroy() 不触发 close 事件，因此这里的销毁不会被隐藏拦截挡住。
   currentWindow?.win.destroy()
   currentHostId = host.id
   currentWindow = createHostWindow(
@@ -72,6 +84,7 @@ function openHost(host: HostEntry): void {
       }
     },
     () => { refreshTrayMenu() },
+    () => quitting,
   )
   currentWindow.win.on('closed', () => { currentWindow = undefined })
 }
@@ -162,12 +175,26 @@ ipcMain.handle('shell:restart', event => {
   return { ok: true as const }
 })
 
+// 标记真正退出：窗口 close 拦截据此放行，否则退出会被隐藏逻辑卡死。
+// 托盘「退出」与系统退出都会经过这里。
+app.on('before-quit', () => { quitting = true })
+
 void app.whenReady().then(boot)
 
 app.on('activate', () => {
+  // macOS 语义：点 Dock 图标时，若窗口被隐藏则唤起，若都关掉了则重开。
+  if (currentWindow !== undefined && !currentWindow.win.isDestroyed()) {
+    currentWindow.show()
+    return
+  }
   if (BrowserWindow.getAllWindows().length === 0) void boot()
 })
 
+// 主机窗口在非 darwin 平台关窗时只会被隐藏，因此本事件在那条路径上不会触发；
+// 真正触发只有两种情况——应用正在退出（quitting，无需再 quit），或窗口被
+// 真正销毁（如 macOS 关窗、或主机被删除/切换）。保留 quit 以维持
+// 「关掉 macOS 最后一个窗口后应用退出」以外的既有语义不变。
 app.on('window-all-closed', () => {
+  if (quitting) return
   if (process.platform !== 'darwin') app.quit()
 })
