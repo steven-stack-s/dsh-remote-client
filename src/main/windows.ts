@@ -43,7 +43,7 @@ export function createHostWindow(host: HostEntry, onTitle: (title: string) => vo
     webPreferences: {
       ...BASE_WEB_PREFERENCES,
       partition: partitionNameFor(host.origin),
-      preload: join(here, '../preload/host.js'),
+      preload: join(here, '../preload/host.cjs'),
     },
   })
 
@@ -95,7 +95,7 @@ export function createWelcomeWindow(): BrowserWindow {
     title: '添加 dsh 主机',
     webPreferences: {
       ...BASE_WEB_PREFERENCES,
-      preload: join(here, '../preload/welcome.js'),
+      preload: join(here, '../preload/welcome.cjs'),
     },
   })
   void win.loadURL(welcomePageUrl())

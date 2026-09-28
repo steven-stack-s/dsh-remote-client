@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 
 export default defineConfig({
@@ -8,12 +9,27 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     build: {
-      // 双入口：host 用于远端主机窗口（零侵入，不暴露任何 API），
-      // welcome 用于壳自有的欢迎页（只暴露窄接口 shell.addHost）。
+      // sandbox: true 的 preload 不支持 ESM（Electron 官方：Sandboxed preload
+      // scripts can't use ESM imports），必须输出 CJS。package.json 是
+      // "type": "module"，故 .js 会被当作 ESM，必须用 .cjs。
       lib: {
         entry: {
           host: 'src/preload/host.ts',
           welcome: 'src/preload/welcome.ts',
+        },
+      },
+      rollupOptions: {
+        output: { format: 'cjs', entryFileNames: '[name].cjs' },
+      },
+    },
+  },
+  renderer: {
+    root: 'src/renderer',
+    build: {
+      rollupOptions: {
+        input: {
+          welcome: resolve('src/renderer/welcome.html'),
+          offline: resolve('src/renderer/offline.html'),
         },
       },
     },
