@@ -1,5 +1,5 @@
 import { Menu, app, type MenuItemConstructorOptions } from 'electron'
-import { canReloadHost, emptyHostsPlaceholder } from './menu-state.js'
+import { canEditHost, emptyHostsPlaceholder } from './menu-state.js'
 import { buildHostMenuItems, hostMenuLabel } from './host-menu.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
@@ -17,7 +17,7 @@ export interface AppMenuDeps {
   openHost: (host: HostEntry) => void
   /** 打开「添加主机」欢迎页。 */
   onAddHost: () => void
-  /** 重新加载当前主机（加载 host.origin，非当前 URL）。 */
+  /** 重新加载当前主机（供主机子菜单与 Ctrl+R 使用；「编辑(E)」中已无重复入口）。 */
   onReload: () => void
   /** 当前主机是否离线（用于标签提示）。 */
   isOffline: () => boolean
@@ -27,6 +27,10 @@ export interface AppMenuDeps {
   onResetLogin: (host: HostEntry) => void
   /** 删除指定主机（实现侧负责弹确认框与善后）。 */
   onRemoveHost: (host: HostEntry) => void
+  /** 打开「编辑主机」窗口（作用于当前主机）。 */
+  onEditCurrentHost: () => void
+  /** 删除当前主机（作用于当前主机，复用同一套确认框）。 */
+  onRemoveCurrentHost: () => void
   /** 退出应用。 */
   onQuit: () => void
 }
@@ -99,7 +103,7 @@ export function installAppMenu(deps: AppMenuDeps): AppMenuHandle {
       // macOS 惯例：首个菜单必须是应用菜单。
       ...(process.platform === 'darwin' ? [darwinAppMenu()] : []),
       {
-        label: '文件(F)',
+        label: '编辑(E)',
         submenu: [
           {
             label: '添加主机…',
@@ -108,13 +112,17 @@ export function installAppMenu(deps: AppMenuDeps): AppMenuHandle {
           },
           { type: 'separator' },
           {
-            label: '重新加载当前主机',
-            // 刻意**不**绑定 Ctrl+R：主机窗口已用 before-input-event 拦截
-            // Ctrl+R。若菜单再注册同一 accelerator，Electron 会在窗口聚焦时
-            // 拦截按键交给菜单，导致 before-input-event 收不到、两条路径
-            // 语义漂移。入口保留在窗口侧，菜单项仅作为可点击的兜底。
-            enabled: canReloadHost(currentId),
-            click: () => { deps.onReload() },
+            label: '编辑主机…',
+            // 与「主机(H)」里每台主机的「重新加载」不同，这两项作用于
+            // 当前主机，没有当前主机时无从下手，故禁用。
+            enabled: canEditHost(currentId),
+            click: () => { deps.onEditCurrentHost() },
+          },
+          {
+            label: '删除主机…',
+            // 第二删除入口：与主机子菜单里的「删除…」共用同一套确认框逻辑。
+            enabled: canEditHost(currentId),
+            click: () => { deps.onRemoveCurrentHost() },
           },
           { type: 'separator' },
           {

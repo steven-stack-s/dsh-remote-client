@@ -19,6 +19,23 @@ export function canReloadHost(currentHostId: string | undefined): boolean {
 }
 
 /**
+ * 「编辑主机…」/「删除主机…」是否可用。
+ *
+ * 这两个菜单项都作用于**当前主机**，因此与 {@link canReloadHost} 同条件：
+ * 没有当前主机时无从下手，应禁用而不是点了没反应。
+ *
+ * 与 `canReloadHost` 分开命名而非复用，是为了让调用点表达意图——
+ * 日后若「可重载」与「可编辑」的条件分化（例如未加载完时不允许编辑），
+ * 改动点集中在这里，不会牵连重载逻辑。
+ *
+ * @param currentHostId - 当前打开的主机 id；无主机时为 undefined。
+ * @returns 可用时返回 true。
+ */
+export function canEditHost(currentHostId: string | undefined): boolean {
+  return currentHostId !== undefined && currentHostId !== ''
+}
+
+/**
  * 「打开主机」子项是否可用：任何已配置主机都可被打开。
  *
  * 目前恒为 true，但保留为纯函数以便日后加入「离线不可开」之类规则时

@@ -86,6 +86,27 @@ export function removeHost(data: HostsFile, id: string): HostsFile {
 }
 
 /**
+ * 用编辑后的条目替换原条目。
+ *
+ * 与原 id 不同是允许的：改地址会换 origin，`id`（以及 partition 名）随之
+ * 变化，原登录态不再被使用。此时 `lastHostId` 需要一并跟随，否则它仍指向
+ * 一个已不存在的 id。
+ *
+ * @param data - 当前配置。
+ * @param id - 被编辑的主机原 id。
+ * @param next - 编辑后的条目。
+ * @returns 新的配置对象。
+ */
+export function replaceHost(data: HostsFile, id: string, next: HostEntry): HostsFile {
+  if (!data.hosts.some(h => h.id === id)) return data
+  return {
+    ...data,
+    hosts: data.hosts.map(h => (h.id === id ? next : h)),
+    lastHostId: data.lastHostId === id ? next.id : data.lastHostId,
+  }
+}
+
+/**
  * 重命名一台主机。
  *
  * @param data - 当前配置。

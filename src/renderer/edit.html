@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>编辑主机</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; height: 100vh; display: grid; place-content: center;
+        background: #151517; color: #e6edf3;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      form { width: 460px; display: grid; gap: 10px; }
+      h1 { font-size: 16px; margin: 0 0 6px; }
+      label { font-size: 13px; color: #8b949e; }
+      input {
+        padding: 9px 12px; font-size: 14px; border-radius: 8px;
+        border: 1px solid #30363d; background: #0d1117; color: #e6edf3;
+      }
+      input:disabled { opacity: 0.6; }
+      .row { display: flex; gap: 10px; align-items: center; }
+      button {
+        padding: 10px; font-size: 14px; border: 0; border-radius: 8px;
+        background: #4c8bf5; color: #fff; cursor: pointer;
+      }
+      button.secondary { background: #30363d; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      p.err { color: #f85149; font-size: 13px; min-height: 18px; margin: 0; }
+      p.hint { color: #8b949e; font-size: 12px; line-height: 1.7; margin: 0; }
+      .warn {
+        display: none; gap: 6px; padding: 10px 12px; border-radius: 8px;
+        border: 1px solid #9e6a03; background: #2d2305;
+      }
+      .warn.show { display: grid; }
+      .warn p { margin: 0; font-size: 12px; color: #e3b341; line-height: 1.7; }
+      .actions { display: flex; gap: 10px; margin-top: 4px; }
+      .actions button { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <form id="form">
+      <h1>编辑主机</h1>
+
+      <label for="label">显示名</label>
+      <input id="label" autocomplete="off" placeholder="deepseek-harness-01" />
+
+      <label for="origin">主机地址</label>
+      <input id="origin" autocomplete="off" required />
+
+      <label for="token">访问令牌（launch token，可留空）</label>
+      <input id="token" autocomplete="off" placeholder="留空表示该部署不需要令牌" />
+
+      <div class="warn" id="warn">
+        <p>
+          <strong>修改地址会丢失该主机已保存的登录状态。</strong>
+          登录态与地址（origin）绑定，换地址等于换了一台主机：
+          已有的 cookie 不再被使用，需要重新登录；
+          若该部署使用访问令牌，请一并填入新的令牌。
+        </p>
+      </div>
+
+      <p class="err" id="err"></p>
+
+      <div class="actions">
+        <button type="button" class="secondary" id="cancel">取消</button>
+        <button type="submit" id="save">保存</button>
+      </div>
+
+      <p class="hint">令牌用于未安装认证插件的 dsh 部署：把 <code>dsh web</code> 打印的地址整段粘贴到「主机地址」也可以，令牌会自动提取。</p>
+    </form>
+    <script>
+      const form = document.getElementById('form')
+      const err = document.getElementById('err')
+      const warn = document.getElementById('warn')
+      const labelInput = document.getElementById('label')
+      const originInput = document.getElementById('origin')
+      const tokenInput = document.getElementById('token')
+      const saveBtn = document.getElementById('save')
+      const cancelBtn = document.getElementById('cancel')
+
+      let originalOrigin = ''
+
+      // 实时提示：地址一改就警告，不等保存才说。
+      function checkOriginChanged() {
+        warn.classList.toggle('show', originInput.value.trim() !== '' && originInput.value.trim() !== originalOrigin)
+      }
+      originInput.addEventListener('input', checkOriginChanged)
+
+      window.shell.loadHost().then(host => {
+        if (host === null) {
+          err.textContent = '无法读取主机信息。'
+          saveBtn.disabled = true
+          return
+        }
+        labelInput.value = host.label
+        originInput.value = host.origin
+        tokenInput.value = host.launchToken ?? ''
+        originalOrigin = host.origin
+      })
+
+      form.addEventListener('submit', async event => {
+        event.preventDefault()
+        err.textContent = ''
+        saveBtn.disabled = true
+        const result = await window.shell.saveHost({
+          label: labelInput.value,
+          origin: originInput.value,
+          launchToken: tokenInput.value,
+        })
+        if (!result.ok) {
+          err.textContent = result.message
+          saveBtn.disabled = false
+        }
+      })
+
+      cancelBtn.addEventListener('click', () => { window.shell.close() })
+    </script>
+  </body>
+</html>

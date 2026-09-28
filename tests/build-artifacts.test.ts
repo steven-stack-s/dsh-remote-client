@@ -27,18 +27,32 @@ function requireBuilt(): void {
 }
 
 describe('构建产物', () => {
-  it('五个关键产物均存在', async () => {
+  it('七个关键产物均存在', async () => {
     requireBuilt()
+    // 断言「恰好」这些，而非「至少包含」：这个测试的价值就是守住产物结构。
+    // 新增页面/入口时**必须**同步更新本列表——那正是提醒作者「你在改产物
+    // 布局」的时机。edit.* 于 task-12 加入（编辑主机窗口）。
     const expected = [
       'main/index.js',
       'preload/host.cjs',
       'preload/welcome.cjs',
+      'preload/edit.cjs',
       'renderer/offline.html',
       'renderer/welcome.html',
+      'renderer/edit.html',
     ]
     for (const relative of expected) {
       expect(existsSync(join(outDir, relative)), `缺少产物：out/${relative}`).toBe(true)
     }
+
+    // 反向断言：产物总数必须恰好等于预期，多出来的文件（例如意外生成的
+    // 共享 chunk）会被这里挡住——P0-1 那次事故正是共享 chunk 造成的。
+    const actual = [
+      ...(await readdir(join(outDir, 'main'))).map(n => `main/${n}`),
+      ...(await readdir(join(outDir, 'preload'))).map(n => `preload/${n}`),
+      ...(await readdir(join(outDir, 'renderer'))).map(n => `renderer/${n}`),
+    ].sort()
+    expect(actual).toEqual([...expected].sort())
   })
 
   it('preload 未内联 npm electron 包', async () => {

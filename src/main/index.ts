@@ -1,10 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { addHost, loadHosts, loadHostsSync, removeHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
-import { createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
+import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
+import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps } from './tray.js'
 import { installAppMenu, type AppMenuHandle } from './menu.js'
 import { clearHostLoginState } from './host-menu.js'
 import { shouldCloseWindowAfterRemove } from './menu-state.js'
+import { hostIdFromOrigin } from './partitions.js'
+import { applyHostEdit } from '../shared/host-edit.js'
 import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
@@ -56,6 +58,46 @@ function openWelcomeWindow(): void {
 
 /** 应用菜单句柄；装配后据此重建。 */
 let appMenu: AppMenuHandle | undefined
+
+/** 当前被编辑的主机 id；编辑窗口通过 IPC 读取/保存它。 */
+let editingHostId: string | undefined
+
+/** 编辑窗口的 webContents id 集合，用于校验 IPC sender。 */
+const editWebContentsIds = new Set<number>()
+
+/**
+ * 打开「编辑主机」窗口。
+ *
+ * 只允许同时存在一个编辑窗口：重复打开会指向同一个被编辑对象，
+ * 两个窗口各自保存会互相覆盖，徒增困惑。
+ *
+ * @param host - 待编辑的主机。
+ */
+function openEditWindow(host: HostEntry): void {
+  if (editWebContentsIds.size > 0) return
+  editingHostId = host.id
+  const win = createEditWindow()
+  const id = win.webContents.id
+  editWebContentsIds.add(id)
+  win.on('closed', () => {
+    editWebContentsIds.delete(id)
+    editingHostId = undefined
+  })
+}
+
+/** 打开当前主机的编辑窗口；无当前主机时什么都不做。 */
+function openEditCurrentHost(): void {
+  const host = hostsData.hosts.find(h => h.id === currentHostId)
+  if (host === undefined) return
+  openEditWindow(host)
+}
+
+/** 删除当前主机（复用与托盘一致的确认框路径）。 */
+function removeCurrentHost(): void {
+  const host = hostsData.hosts.find(h => h.id === currentHostId)
+  if (host === undefined) return
+  void requestRemoveHost(host)
+}
 
 /**
  * 同时重建托盘菜单与应用菜单。
@@ -207,6 +249,8 @@ function installAppMenuBar(): void {
       onRetryNow: () => { currentWindow?.retryNow() },
       onResetLogin: host => { resetHostLoginState(host) },
       onRemoveHost: host => { void requestRemoveHost(host) },
+      onEditCurrentHost: () => { openEditCurrentHost() },
+      onRemoveCurrentHost: () => { removeCurrentHost() },
       onQuit: () => { app.quit() },
     })
   } catch (error) {
@@ -301,6 +345,77 @@ ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
   } catch (error) {
     return { ok: false as const, message: error instanceof Error ? error.message : String(error) }
   }
+})
+
+// 编辑窗口的 IPC。同样校验 sender 必须是壳自有的编辑页——远端主机页面
+// 是不可信内容，不得读改主机配置。
+ipcMain.handle('shell:edit:load', event => {
+  if (!editWebContentsIds.has(event.sender.id)) return null
+  const host = hostsData.hosts.find(h => h.id === editingHostId)
+  if (host === undefined) return null
+  return {
+    id: host.id,
+    label: host.label,
+    origin: host.origin,
+    launchToken: host.launchToken ?? '',
+  }
+})
+
+ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
+  if (!editWebContentsIds.has(event.sender.id)) {
+    return { ok: false as const, message: '无权修改主机配置' }
+  }
+  if (typeof input !== 'object' || input === null) {
+    return { ok: false as const, message: '参数不合法' }
+  }
+  const { label, origin, launchToken } = input as Record<string, unknown>
+  if (typeof label !== 'string' || typeof origin !== 'string' || typeof launchToken !== 'string') {
+    return { ok: false as const, message: '参数不合法' }
+  }
+
+  const current = hostsData.hosts.find(h => h.id === editingHostId)
+  if (current === undefined) return { ok: false as const, message: '该主机已不存在' }
+
+  try {
+    const { host: edited, originChanged } = applyHostEdit(
+      current,
+      { label, origin, launchToken },
+      hostIdFromOrigin,
+    )
+
+    // 改为与另一台已存在主机相同的地址会导致 id 冲突（partition 也相同），
+    // 必须拒绝，否则配置里会出现两条指向同一 partition 的记录。
+    const clash = hostsData.hosts.find(h => h.id === edited.id && h.id !== current.id)
+    if (clash !== undefined) {
+      return { ok: false as const, message: `该地址已被「${clash.label}」使用，请先删除或改用其他地址。` }
+    }
+
+    await persist(replaceHost(hostsData, current.id, edited))
+
+    if (originChanged) {
+      // 换地址等于换主机：旧窗口承载的是旧 partition 的会话，保留它会与
+      // 新配置不一致。这里直接销毁，让用户从菜单显式打开新地址。
+      if (currentWindow !== undefined && currentHostId === current.id) {
+        currentWindow.win.destroy()
+        currentWindow = undefined
+        currentHostId = undefined
+      }
+    } else if (currentWindow !== undefined && currentHostId === edited.id) {
+      // 地址没变 → 让窗口生效。必须重放 token 握手：令牌可能刚被更新，
+      // 而只加载干净 origin 会用旧的（可能已失效的）cookie。
+      currentWindow.reloadWithToken()
+    }
+
+    refreshMenus()
+    return { ok: true as const }
+  } catch (error) {
+    return { ok: false as const, message: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.on('shell:edit:close', event => {
+  if (!editWebContentsIds.has(event.sender.id)) return
+  BrowserWindow.fromWebContents(event.sender)?.close()
 })
 
 // 只允许壳自有的欢迎页触发重启。远端主机页面是不可信内容——若不加这道校验，

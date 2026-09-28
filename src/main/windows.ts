@@ -16,6 +16,7 @@ const here = import.meta.dirname
 /** 离线页与欢迎页路径（electron-vite 会把 renderer 打进 out/renderer）。 */
 const OFFLINE_PAGE = join(here, '../renderer/offline.html')
 const WELCOME_PAGE = join(here, '../renderer/welcome.html')
+const EDIT_PAGE = join(here, '../renderer/edit.html')
 
 /** 与站点无关的窗口默认项：隔离、无 Node、沙箱。 */
 const BASE_WEB_PREFERENCES = {
@@ -34,6 +35,14 @@ export interface HostWindowHandle {
   retryNow: () => void
   /** 重新加载 host.origin（供托盘「重新加载」与 Ctrl+R）。 */
   reload: () => void
+  /**
+   * 用当前的（可能刚更新的）token 重新发起握手并加载。
+   *
+   * 与 `reload` 的区别：`reload` 加载干净 origin（假设 cookie 已在），
+   * 而本方法会重放 token 握手——编辑主机保存后 token 可能刚被更换，
+   * 必须重放才能拿到新的 cookie。
+   */
+  reloadWithToken: () => void
   /** 显示并聚焦窗口（供托盘「打开」在窗口被隐藏时唤起）。 */
   show: () => void
 }
@@ -257,6 +266,18 @@ export function createHostWindow(
     isOffline: () => offline,
     retryNow,
     reload,
+    // 用（可能刚更新的）token 重新发起握手。编辑主机保存后调用：
+    // token 可能刚被更换，此时必须重放握手才能换取新的 cookie。
+    reloadWithToken: () => {
+      if (win.isDestroyed()) return
+      const url = host.launchToken !== undefined
+        ? tokenHandshakeUrl(host.origin, host.launchToken)
+        : reloadTargetFor(host.origin, win.webContents.getURL())
+      void win.loadURL(url)
+      stopTimer()
+      attempt = 0
+      setOffline(false)
+    },
     // 窗口可能处于隐藏态（用户关窗后驻留），唤起时必须先 show 再 focus。
     show: () => {
       if (win.isDestroyed()) return
@@ -302,5 +323,29 @@ export function createWelcomeWindow(): BrowserWindow {
     },
   })
   void win.loadFile(WELCOME_PAGE)
+  return win
+}
+
+/**
+ * 创建「编辑主机」窗口。
+ *
+ * 窗口自身不承载主机数据——渲染进程通过 `shell:edit:load` 从主进程读取，
+ * 主进程用「当前被编辑的主机 id」而非 URL 参数来定位对象，避免把令牌
+ * 之类敏感值写进 URL（URL 会留在历史与日志里）。
+ *
+ * @returns 已开始加载的窗口。
+ */
+export function createEditWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 560,
+    height: 620,
+    title: '编辑主机',
+    parent: undefined,
+    webPreferences: {
+      ...BASE_WEB_PREFERENCES,
+      preload: join(here, '../preload/edit.cjs'),
+    },
+  })
+  void win.loadFile(EDIT_PAGE)
   return win
 }

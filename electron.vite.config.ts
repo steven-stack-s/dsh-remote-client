@@ -16,6 +16,7 @@ export default defineConfig({
         entry: {
           host: 'src/preload/host.ts',
           welcome: 'src/preload/welcome.ts',
+          edit: 'src/preload/edit.ts',
         },
       },
       rollupOptions: {
@@ -36,6 +37,7 @@ export default defineConfig({
         input: {
           welcome: resolve('src/renderer/welcome.html'),
           offline: resolve('src/renderer/offline.html'),
+          edit: resolve('src/renderer/edit.html'),
         },
       },
     },
