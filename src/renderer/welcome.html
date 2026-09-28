@@ -21,8 +21,16 @@
         margin-top: 8px; padding: 10px; font-size: 14px; border: 0;
         border-radius: 8px; background: #4c8bf5; color: #fff; cursor: pointer;
       }
+      button.secondary { background: #30363d; }
       p.err { color: #f85149; font-size: 13px; min-height: 18px; margin: 0; }
       p.hint { color: #8b949e; font-size: 12px; line-height: 1.7; margin: 0; }
+      .restart {
+        display: none; gap: 8px; padding: 12px; border-radius: 8px;
+        border: 1px solid #9e6a03; background: #2d2305;
+      }
+      .restart.show { display: grid; }
+      .restart p { margin: 0; font-size: 13px; color: #e3b341; line-height: 1.7; }
+      .restart button { margin-top: 0; }
     </style>
   </head>
   <body>
@@ -34,18 +42,42 @@
       <input id="label" placeholder="家里 NAS" autocomplete="off" />
       <button type="submit">添加并打开</button>
       <p class="err" id="err"></p>
+
+      <div class="restart" id="restart">
+        <p>
+          该主机使用 <code>http://</code> 明文地址。浏览器安全特性（剪贴板、通知等）
+          只能对「安全上下文」启用，而该豁免<strong>只能在客户端启动时生效</strong>。
+          请重启客户端一次以启用。
+        </p>
+        <button type="button" class="secondary" id="restart-btn">立即重启</button>
+      </div>
+
       <p class="hint">远端需已配置 <code>DSH_TRUSTED_HOSTS</code>，或已安装 <code>@xgone/dsh-remote</code>，否则登录后会遇到 403。</p>
     </form>
     <script>
       const form = document.getElementById('form')
       const err = document.getElementById('err')
+      const restartBox = document.getElementById('restart')
+      const restartBtn = document.getElementById('restart-btn')
+
       form.addEventListener('submit', async event => {
         event.preventDefault()
         err.textContent = ''
         const origin = document.getElementById('origin').value
         const label = document.getElementById('label').value
         const result = await window.shell.addHost({ origin, label: label === '' ? undefined : label })
-        if (!result.ok) err.textContent = result.message
+        if (!result.ok) {
+          err.textContent = result.message
+          restartBox.classList.remove('show')
+          return
+        }
+        // 明文 http 主机需要重启才能成为安全上下文（规格 §5.3）。
+        restartBox.classList.toggle('show', result.needsRestart === true)
+      })
+
+      restartBtn.addEventListener('click', async () => {
+        restartBtn.disabled = true
+        await window.shell.restart()
       })
     </script>
   </body>

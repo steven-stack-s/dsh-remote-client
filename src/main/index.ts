@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { addHost, loadHosts, loadHostsSync, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps } from './tray.js'
+import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
@@ -15,6 +16,13 @@ if (insecureValue !== '') {
   app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', insecureValue)
 }
 
+/**
+ * 启动时**已生效**的 origin 列表。开关只能在 whenReady 之前设置，
+ * 因此这份列表在整个进程生命周期内是冻结的——运行时新增的 http 主机
+ * 不在其中，需要重启才能成为安全上下文（规格 §5.3）。
+ */
+const startupEffectiveOrigins: readonly string[] = earlyHosts.hosts.map(h => h.origin)
+
 /** 当前打开的主机窗口；切换主机时关闭旧的，避免并存两份 WebSocket。 */
 let currentWindow: HostWindowHandle | undefined
 
@@ -22,6 +30,25 @@ let currentWindow: HostWindowHandle | undefined
 let hostsData: HostsFile = { version: 1, hosts: [] }
 let currentHostId: string | undefined
 let tray: Electron.Tray | undefined
+
+/**
+ * 壳自有欢迎页的 webContents id 集合。
+ *
+ * `shell:restart` 只允许这些上下文调用：远端主机页面是本项目明确认定的
+ * **不可信内容**，绝不能让它触发重启。用 id 集合而非窗口引用，是因为窗口
+ * 关闭后引用会失效，而 id 可以精确增删。
+ */
+const welcomeWebContentsIds = new Set<number>()
+
+/**
+ * 打开欢迎窗口并登记其 webContents，供 `shell:restart` 校验 sender。
+ */
+function openWelcomeWindow(): void {
+  const win = createWelcomeWindow()
+  const id = win.webContents.id
+  welcomeWebContentsIds.add(id)
+  win.on('closed', () => { welcomeWebContentsIds.delete(id) })
+}
 
 /** 重建托盘菜单（若托盘已装配）。 */
 function refreshTrayMenu(): void {
@@ -68,7 +95,7 @@ function installTray(): void {
     setData: next => { void persist(next) },
     getCurrentId: () => currentHostId,
     openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
-    onAddHost: () => { createWelcomeWindow() },
+    onAddHost: () => { openWelcomeWindow() },
     isOffline: () => currentWindow?.isOffline() ?? false,
     onRetryNow: () => { currentWindow?.retryNow() },
     onQuit: () => { app.quit() },
@@ -84,7 +111,7 @@ async function boot(): Promise<void> {
     // 无主机：先装配托盘（否则用户无法管理主机），再开欢迎页。
     hostsData = data
     installTray()
-    createWelcomeWindow()
+    openWelcomeWindow()
     return
   }
 
@@ -116,10 +143,23 @@ ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
     await persist(next)
     const created = next.hosts.find(h => h.id === next.lastHostId)
     if (created !== undefined) openHost(created)
-    return { ok: true as const }
+    // 新增的明文 http 主机不在启动时生效的列表里 → 它不是安全上下文，
+    // navigator.clipboard 等特性会静默失效，必须提示用户重启（规格 §5.3）。
+    const needsRestart = created !== undefined
+      && needsRestartFor(created.origin, startupEffectiveOrigins)
+    return { ok: true as const, needsRestart }
   } catch (error) {
     return { ok: false as const, message: error instanceof Error ? error.message : String(error) }
   }
+})
+
+// 只允许壳自有的欢迎页触发重启。远端主机页面是不可信内容——若不加这道校验，
+// 任意远端页面（或其注入的脚本）都能让客户端重启，等于一个拒绝服务入口。
+ipcMain.handle('shell:restart', event => {
+  if (!welcomeWebContentsIds.has(event.sender.id)) return { ok: false as const }
+  app.relaunch()
+  app.exit(0)
+  return { ok: true as const }
 })
 
 void app.whenReady().then(boot)
