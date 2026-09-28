@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { readdirSync } from 'node:fs'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -9,6 +10,21 @@ let dir: string
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'dsh-hosts-'))
 })
+
+/**
+ * 断言备份已存在——**用同步读取，且不做任何 await**。
+ *
+ * 这是有意的严格性：`loadHosts()` 一旦返回，备份就必须已经落盘。
+ * 早先异步入口用 `void rename(...)` fire-and-forget，Linux 上碰巧通过，
+ * Windows 上备份尚未写完就被读到，CI 因此失败。同步读取能让这类
+ * 竞态在任何平台都立刻暴露。
+ *
+ * @param target - 要检查的目录。
+ * @returns 是否存在备份文件。
+ */
+function hasCorruptBackup(target: string): boolean {
+  return readdirSync(target).some(name => name.startsWith('hosts.json.corrupt-'))
+}
 
 describe('loadHosts', () => {
   it('文件不存在时返回空配置', async () => {
@@ -31,16 +47,14 @@ describe('loadHosts', () => {
     await writeFile(hostsFilePath(dir), '{ not json', 'utf8')
     const data = await loadHosts(dir)
     expect(data.hosts).toHaveLength(0)
-    const entries = await readdir(dir)
-    expect(entries.some(name => name.startsWith('hosts.json.corrupt-'))).toBe(true)
+    expect(hasCorruptBackup(dir)).toBe(true)
   })
 
   it('结构非法的 JSON 同样进入备份分支', async () => {
     await writeFile(hostsFilePath(dir), '{"version":1,"hosts":"oops"}', 'utf8')
     const data = await loadHosts(dir)
     expect(data.hosts).toHaveLength(0)
-    const entries = await readdir(dir)
-    expect(entries.some(name => name.startsWith('hosts.json.corrupt-'))).toBe(true)
+    expect(hasCorruptBackup(dir)).toBe(true)
   })
 })
 
@@ -74,7 +88,6 @@ describe('loadHostsSync', () => {
   it('损坏内容同样备份并返回空配置', async () => {
     await writeFile(hostsFilePath(dir), 'nope', 'utf8')
     expect(loadHostsSync(dir).hosts).toHaveLength(0)
-    const entries = await readdir(dir)
-    expect(entries.some(name => name.startsWith('hosts.json.corrupt-'))).toBe(true)
+    expect(hasCorruptBackup(dir)).toBe(true)
   })
 })

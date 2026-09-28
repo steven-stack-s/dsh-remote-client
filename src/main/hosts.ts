@@ -1,7 +1,7 @@
 import { hostIdFromOrigin } from './partitions.js'
 import { normalizeOrigin } from '../shared/origin.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -185,23 +185,41 @@ function isHostsFile(value: unknown): value is HostsFile {
 }
 
 /**
- * 解析配置文本，损坏时备份原文件。
+ * 把损坏的配置文件备份成 `hosts.json.corrupt-<时间戳>`。
  *
- * 异步与同步两个入口共用本函数，保证两者的备份与回退语义永不漂移。
+ * **刻意用同步 API**：调用方 {@link parseHosts} 是同步函数，无法 `await`，
+ * 而「备份必须在返回前完成」是它的语义承诺——调用者拿到空配置时，
+ * 备份就应当已经存在。
+ *
+ * 早先的实现在异步入口注入了 `void rename(...)`（fire-and-forget），
+ * 于是 `loadHosts()` 返回时备份可能尚未落盘：Linux 上文件系统快、
+ * 碰巧赶在断言前完成，Windows 上则被 `readdir` 抢先读到，导致 CI 失败。
+ *
+ * 同目录内的 rename 只是元数据操作，同步执行的开销可忽略；两个入口
+ * 共用本函数也消除了「异步/同步各自注入实现」造成的语义漂移。
+ *
+ * @param from - 原文件路径。
+ * @param to - 备份文件路径。
+ */
+function backupCorruptFile(from: string, to: string): void {
+  renameSync(from, to)
+}
+
+/**
+ * 解析配置文本，损坏时备份原文件。
  *
  * @param raw - 文件内容。
  * @param path - 文件路径，用于备份。
- * @param backup - 备份实现，注入以使异步/同步各自使用对应 API。
  * @returns 解析结果，损坏时为空配置。
  */
-function parseHosts(raw: string, path: string, backup: (from: string, to: string) => void): HostsFile {
+function parseHosts(raw: string, path: string): HostsFile {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!isHostsFile(parsed)) throw new Error('结构不合法')
     return parsed
   } catch {
     try {
-      backup(path, `${path}.corrupt-${String(Date.now())}`)
+      backupCorruptFile(path, `${path}.corrupt-${String(Date.now())}`)
     } catch {
       // 备份失败不应吞掉可用性：仍返回空配置，让用户能继续操作。
     }
@@ -225,7 +243,7 @@ export async function loadHosts(dir: string): Promise<HostsFile> {
   } catch {
     return emptyHosts()
   }
-  return parseHosts(raw, path, (from, to) => { void rename(from, to).catch(() => undefined) })
+  return parseHosts(raw, path)
 }
 
 /**
@@ -243,7 +261,7 @@ export function loadHostsSync(dir: string): HostsFile {
   } catch {
     return emptyHosts()
   }
-  return parseHosts(raw, path, (from, to) => { renameSync(from, to) })
+  return parseHosts(raw, path)
 }
 
 /**
