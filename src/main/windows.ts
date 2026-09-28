@@ -4,6 +4,7 @@ import { partitionNameFor } from './partitions.js'
 import { backoffDelay } from './backoff.js'
 import { shouldHideOnClose } from './lifecycle.js'
 import { reloadTargetFor } from './reload.js'
+import { tokenHandshakeUrl } from '../shared/host-input.js'
 import type { HostEntry } from '../shared/types.js'
 
 /**
@@ -170,6 +171,32 @@ export function createHostWindow(
     setOffline(false)
   })
 
+  /**
+   * token 失效检测：dsh 鉴权失败时返回 401 + 一段提示文本
+   * （`writeUnauthorized`），对 Electron 而言这是一次**成功**的导航，
+   * 因此 `did-fail-load` 不会触发、页面会停在纯文本错误上。
+   *
+   * 这里只在「配置了 token 且尚未重放过」时回放一次带 token 的握手，
+   * 用来覆盖 dsh 重启导致 token 轮换、但用户手动更新前的灰色窗口期。
+   * 若回放后仍 401，就不再重试，交由离线页提示用户重新添加主机——
+   * 无限回放既是无效流量，也会掩盖真正的问题。
+   */
+  let handshakeReplayed = false
+  win.webContents.on('did-navigate', (_event, _url, httpResponseCode) => {
+    if (httpResponseCode !== 401) return
+    if (host.launchToken === undefined || handshakeReplayed) {
+      void win.loadFile(OFFLINE_PAGE, {
+        query: {
+          detail: 'dsh 要求认证（401）。若该部署使用 launch token，'
+            + '请到「文件 → 添加主机…」重新粘贴 dsh web 打印的带 token 地址以更新令牌。',
+        },
+      })
+      return
+    }
+    handshakeReplayed = true
+    void win.loadURL(tokenHandshakeUrl(host.origin, host.launchToken))
+  })
+
   const retryNow = (): void => {
     stopTimer()
     attempt = 0
@@ -216,7 +243,15 @@ export function createHostWindow(
     stopTimer()
   })
 
-  void win.loadURL(host.origin)
+  // 首次加载：若配置了 launch token，必须先访问带 token 的 URL 换取
+  // authority 绑定的签名 cookie（未装认证插件的 dsh 部署**只能**这样接入）。
+  // 之后的 reload/重试一律加载干净的 origin——cookie 已在 partition 里，
+  // 重放 token 既无必要、又可能因 token 过期而失败。
+  void win.loadURL(
+    host.launchToken !== undefined
+      ? tokenHandshakeUrl(host.origin, host.launchToken)
+      : reloadTargetFor(host.origin, undefined),
+  )
   return {
     win,
     isOffline: () => offline,

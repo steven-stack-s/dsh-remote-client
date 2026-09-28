@@ -21,15 +21,22 @@ export function defaultLabelFor(origin: string): string {
 }
 
 /**
- * 新增或更新一台主机。已存在同一 origin 时只更新 label 与 lastUsedAt，
- * 绝不产生第二条记录——cookie 与 partition 都按 origin 唯一。
+ * 新增或更新一台主机。已存在同一 origin 时只更新 label、launchToken 与
+ * lastUsedAt，绝不产生第二条记录——cookie 与 partition 都按 origin 唯一。
  *
  * @param data - 当前配置。
  * @param rawOrigin - 用户填写的地址，内部会规范化。
  * @param label - 可选显示名，缺省用 {@link defaultLabelFor}。
+ * @param launchToken - 可选的 dsh launch token；传入即更新（dsh 重启后 token 会变，
+ *   重新添加同一主机是更新令牌的主要途径）。
  * @returns 新的配置对象。
  */
-export function addHost(data: HostsFile, rawOrigin: string, label?: string): HostsFile {
+export function addHost(
+  data: HostsFile,
+  rawOrigin: string,
+  label?: string,
+  launchToken?: string,
+): HostsFile {
   const origin = normalizeOrigin(rawOrigin)
   const id = hostIdFromOrigin(origin)
   const now = Date.now()
@@ -39,6 +46,8 @@ export function addHost(data: HostsFile, rawOrigin: string, label?: string): Hos
     const updated: HostEntry = {
       ...existing,
       ...(label !== undefined && { label }),
+      // 仅在显式传入时覆盖；不传则保留旧 token（用户可能只是重命名或切换）。
+      ...(launchToken !== undefined && { launchToken }),
       lastUsedAt: now,
     }
     return {
@@ -51,6 +60,7 @@ export function addHost(data: HostsFile, rawOrigin: string, label?: string): Hos
   const entry: HostEntry = {
     id,
     origin,
+    ...(launchToken !== undefined && { launchToken }),
     label: label ?? defaultLabelFor(origin),
     addedAt: now,
     lastUsedAt: now,

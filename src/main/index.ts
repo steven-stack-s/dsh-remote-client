@@ -5,6 +5,7 @@ import { createTray, type TrayDeps } from './tray.js'
 import { installAppMenu, type AppMenuHandle } from './menu.js'
 import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
+import { parseHostInput } from '../shared/host-input.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 const dataDir = app.getPath('userData')
@@ -213,8 +214,17 @@ ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
   const { origin, label } = input as { origin?: unknown, label?: unknown }
   if (typeof origin !== 'string') return { ok: false as const, message: '请输入主机地址' }
   try {
+    // 用户可能直接粘贴 `dsh web` 打印的带 token 地址。必须在这里拆出 token：
+    // URL.origin 不含 query，交给 addHost 会被静默丢弃，而未装认证插件的
+    // 部署只能靠该 token 换取 cookie。
+    const parsed = parseHostInput(origin)
     const data = await loadHosts(dataDir)
-    const next = addHost(data, origin, typeof label === 'string' && label !== '' ? label : undefined)
+    const next = addHost(
+      data,
+      parsed.origin,
+      typeof label === 'string' && label !== '' ? label : undefined,
+      parsed.launchToken,
+    )
     // 必须走 persist：托盘菜单读的是内存镜像 hostsData，
     // 只 saveHosts 的话新主机不会出现在菜单里。
     await persist(next)
