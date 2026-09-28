@@ -19,6 +19,12 @@ export default defineConfig({
         },
       },
       rollupOptions: {
+        // 必须显式声明 external：externalizeDepsPlugin 只读 package.json 的
+        // `dependencies`，本项目依赖全在 `devDependencies`，plugin 会把 electron-vite
+        // 预设里本已正确的 external 列表覆盖成空，导致 npm `electron` 包被整包内联。
+        // 该包顶层 `module.exports = getElectronPath()` 在 require 时即执行 spawnSync，
+        // 在 sandbox: true 的 preload 里必然抛错 → preload 全挂、window.shell 为 undefined。
+        external: ['electron'],
         output: { format: 'cjs', entryFileNames: '[name].cjs' },
       },
     },

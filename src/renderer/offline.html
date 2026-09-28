@@ -13,11 +13,13 @@
       h1 { font-size: 18px; margin: 0; }
       p { margin: 0; color: #8b949e; font-size: 14px; line-height: 1.7; }
       code { color: #4c8bf5; }
+      p.retry { color: #e6edf3; }
     </style>
   </head>
   <body>
     <h1>无法连接到 dsh 主机</h1>
     <p id="detail">正在重试…</p>
+    <p class="retry">应用会按 1s → 2s → 4s → 8s …（上限 30s）自动重连，无需手动操作。</p>
     <p>若提示 403，请在 dsh-docker 侧配置 <code>DSH_TRUSTED_HOSTS</code>，或安装 <code>@xgone/dsh-remote</code>。</p>
     <script>
       const params = new URLSearchParams(location.search)

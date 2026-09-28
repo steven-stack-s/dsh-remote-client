@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { addHost, loadHosts, loadHostsSync, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
-import { createHostWindow, createOfflineWindow, createWelcomeWindow } from './windows.js'
+import { createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps } from './tray.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
@@ -16,12 +16,17 @@ if (insecureValue !== '') {
 }
 
 /** 当前打开的主机窗口；切换主机时关闭旧的，避免并存两份 WebSocket。 */
-let currentWindow: BrowserWindow | undefined
+let currentWindow: HostWindowHandle | undefined
 
 /** 内存中的配置镜像，托盘与窗口共用；写盘后同步更新。 */
 let hostsData: HostsFile = { version: 1, hosts: [] }
 let currentHostId: string | undefined
 let tray: Electron.Tray | undefined
+
+/** 重建托盘菜单（若托盘已装配）。 */
+function refreshTrayMenu(): void {
+  ;(tray as unknown as { rebuildMenu?: () => void } | undefined)?.rebuildMenu?.()
+}
 
 /**
  * 打开一台主机，并关闭此前的主机窗口。
@@ -29,12 +34,19 @@ let tray: Electron.Tray | undefined
  * @param host - 目标主机。
  */
 function openHost(host: HostEntry): void {
-  currentWindow?.destroy()
+  currentWindow?.win.destroy()
   currentHostId = host.id
-  currentWindow = createHostWindow(host, title => {
-    if (title !== '') currentWindow?.setTitle(`${host.label} — ${title}`)
-  })
-  currentWindow.on('closed', () => { currentWindow = undefined })
+  currentWindow = createHostWindow(
+    host,
+    title => {
+      // 离线期间标题由重试倒计时接管，不让页面标题覆盖掉状态提示。
+      if (title !== '' && currentWindow?.isOffline() === false) {
+        currentWindow?.win.setTitle(`${host.label} — ${title}`)
+      }
+    },
+    () => { refreshTrayMenu() },
+  )
+  currentWindow.win.on('closed', () => { currentWindow = undefined })
 }
 
 /**
@@ -45,7 +57,7 @@ function openHost(host: HostEntry): void {
 async function persist(next: HostsFile): Promise<void> {
   hostsData = next
   await saveHosts(dataDir, next)
-  ;(tray as unknown as { rebuildMenu?: () => void } | undefined)?.rebuildMenu?.()
+  refreshTrayMenu()
 }
 
 /** 装配托盘；只装配一次。 */
@@ -56,6 +68,9 @@ function installTray(): void {
     setData: next => { void persist(next) },
     getCurrentId: () => currentHostId,
     openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
+    onAddHost: () => { createWelcomeWindow() },
+    isOffline: () => currentWindow?.isOffline() ?? false,
+    onRetryNow: () => { currentWindow?.retryNow() },
     onQuit: () => { app.quit() },
   }
   tray = createTray(deps)
@@ -80,15 +95,13 @@ async function boot(): Promise<void> {
   installTray()
 }
 
-ipcMain.on('shell:title', (event, title: unknown) => {
-  if (typeof title !== 'string') return
-  // Electron 44 起 fromWebContents 返回 `BrowserWindow | null`（旧版为 undefined）。
-  const win = BrowserWindow.fromWebContents(event.sender)
-  if (win !== null && !win.isDestroyed()) win.setTitle(title)
-})
+// 标题走 windows.ts 的 page-title-updated 原生事件这一条路径；
+// 早期版本的 shell:title IPC 与它互相覆盖，且由 MutationObserver 高频触发，
+// 已删除，这里不再注册对应 handler。
 
-ipcMain.on('shell:network', (_event, _online: unknown) => {
-  // 阶段 1 仅记录；离线覆盖页已由 did-fail-load 负责。
+ipcMain.on('shell:network', (_event, online: unknown) => {
+  // 网络恢复时立刻重试一次，不必等退避耗尽；离线事件交给 did-fail-load 处理。
+  if (online === true) currentWindow?.retryNow()
 })
 
 ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
@@ -98,7 +111,9 @@ ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
   try {
     const data = await loadHosts(dataDir)
     const next = addHost(data, origin, typeof label === 'string' && label !== '' ? label : undefined)
-    await saveHosts(dataDir, next)
+    // 必须走 persist：托盘菜单读的是内存镜像 hostsData，
+    // 只 saveHosts 的话新主机不会出现在菜单里。
+    await persist(next)
     const created = next.hosts.find(h => h.id === next.lastHostId)
     if (created !== undefined) openHost(created)
     return { ok: true as const }
