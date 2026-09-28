@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { partitionNameFor } from './partitions.js'
 import { backoffDelay } from './backoff.js'
 import { shouldHideOnClose } from './lifecycle.js'
+import { reloadTargetFor } from './reload.js'
 import type { HostEntry } from '../shared/types.js'
 
 /**
@@ -30,6 +31,8 @@ export interface HostWindowHandle {
   isOffline: () => boolean
   /** 立即重试（供「网络恢复」或托盘手动触发）。 */
   retryNow: () => void
+  /** 重新加载 host.origin（供托盘「重新加载」与 Ctrl+R）。 */
+  reload: () => void
   /** 显示并聚焦窗口（供托盘「打开」在窗口被隐藏时唤起）。 */
   show: () => void
 }
@@ -173,6 +176,41 @@ export function createHostWindow(
     void win.loadURL(host.origin)
   }
 
+  /**
+   * 重新加载主机：丢弃当前页面并重新请求 `host.origin`。
+   *
+   * 必须加载 host.origin 而非当前 URL——SSO 门户地址（如 UGOS 容器远程地址）
+   * 第一跳会 302 到门户登录页，登录完成后门户不提供 return-URL 回跳，页面会
+   * 停在门户桌面。此时 `webContents.reload()` 只会再加载门户桌面，只有重新
+   * 请求原始 origin 才能带着已获得的登录态进到 dsh。
+   */
+  const reload = (): void => {
+    if (win.isDestroyed()) return
+    // 隐藏态下先唤起：用户在托盘点「重新加载」时应当看到结果，而不是
+    // 让页面在一个看不见的窗口里悄悄切换。
+    if (!win.isVisible()) win.show()
+    // 目标由纯函数决定并断言其与当前 URL 无关（见 reload.ts）。
+    void win.loadURL(reloadTargetFor(host.origin, win.webContents.getURL()))
+    stopTimer()
+    attempt = 0
+    setOffline(false)
+  }
+
+  // Ctrl+R / Cmd+R 重新加载。Electron 默认不启用该快捷键，需显式注册；
+  // 只挂在主机窗口上，欢迎页等壳自有窗口不受影响。
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    // 按住不放会连续触发；重新加载本就是重操作，忽略重复事件。
+    if (input.isAutoRepeat) return
+    if (input.key.toLowerCase() !== 'r') return
+    const acceleratorPressed = process.platform === 'darwin' ? input.meta : input.control
+    if (!acceleratorPressed) return
+    // 不拦截 Shift+Ctrl+R（强制重载语义不同）与 Alt 组合，避免意外吞键。
+    if (input.shift || input.alt) return
+    event.preventDefault()
+    reload()
+  })
+
   win.on('closed', () => {
     disposed = true
     stopTimer()
@@ -183,6 +221,7 @@ export function createHostWindow(
     win,
     isOffline: () => offline,
     retryNow,
+    reload,
     // 窗口可能处于隐藏态（用户关窗后驻留），唤起时必须先 show 再 focus。
     show: () => {
       if (win.isDestroyed()) return

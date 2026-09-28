@@ -19,6 +19,8 @@ export interface TrayDeps {
   isOffline: () => boolean
   /** 立即重试当前主机。 */
   onRetryNow: () => void
+  /** 重新加载当前主机（丢弃被门户重定向后的页面，重新请求 host.origin）。 */
+  onReload: () => void
   /** 退出应用。 */
   onQuit: () => void
 }
@@ -66,11 +68,17 @@ export function createTray(deps: TrayDeps): Tray {
     tray.setToolTip(offline ? 'dsh-remote-client（离线，正在重试）' : 'dsh-remote-client')
 
     const hostItems: MenuItemConstructorOptions[] = data.hosts.map(host => {
+      const isCurrent = host.id === currentId
       const submenu: MenuItemConstructorOptions[] = [
         { label: '打开', click: () => { deps.openHost(host) } },
       ]
+      // 「重新加载」只对当前已打开的主机有意义（要重新请求它的 origin），
+      // 与下面「立即重试」保持一致：非当前主机不显示，避免无意义操作。
+      if (isCurrent) {
+        submenu.push({ label: '重新加载', click: () => { deps.onReload() } })
+      }
       // 仅当前主机且离线时提供「立即重试」，避免对未打开的窗口做无意义操作。
-      if (host.id === currentId && offline) {
+      if (isCurrent && offline) {
         submenu.push({ label: '立即重试', click: () => { deps.onRetryNow() } })
       }
       submenu.push(

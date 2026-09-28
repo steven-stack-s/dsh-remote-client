@@ -111,6 +111,7 @@ function installTray(): void {
     onAddHost: () => { openWelcomeWindow() },
     isOffline: () => currentWindow?.isOffline() ?? false,
     onRetryNow: () => { currentWindow?.retryNow() },
+    onReload: () => { currentWindow?.reload() },
     onQuit: () => { app.quit() },
   }
   tray = createTray(deps)
