@@ -5,13 +5,13 @@
  * 「与远端实现耦合」的知识。单独放在一个文件里，dsh 上游改版时只需改这里。
  *
  * ─────────────────────────────────────────────────────────────
- * ⚠️ 现状：两个选择器都还是 `null`，**尚未经过真机勘察**
+ * 现状：审批选择器**已从上游组件源码勘察确认**；消息选择器暂缓（原因见其注释）
  * ─────────────────────────────────────────────────────────────
  *
- * dsh 前端的类名是构建期哈希化的（如 `.mna1RW_strip`），跨版本必变，**不可依赖**。
- * 必须从真实运行的前端里找出稳定的 `data-*` / `role` / `aria-*` 属性。
- * 本项目的维护环境没有图形界面、也没有运行中的 dsh，无法自行勘察；
- * 勘察脚本见 `docs/dom-勘察脚本.js`（在客户端窗口的 DevTools Console 里粘贴运行）。
+ * dsh 前端的类名是构建期哈希化的（如 `.mna1RW_strip`），跨版本必变，**不可依赖**；
+ * 判据只能取稳定的 `data-*` / `role` / `aria-*` 属性。这些属性可直接从 dsh 的
+ * 客户端 UI 包里读出来（`@deepseek-ai/dsh-client-ui-…` 的 `lib/client.js`），
+ * 不必依赖运行时勘察。
  *
  * **`null` 的语义是「该规则尚未启用」，而不是「没有信号」。**
  * 消费方（`host.ts` 的观察器）必须跳过它：不能把 `null` 交给 `querySelector`
@@ -25,11 +25,26 @@
  * 命中它 → 上报 `urgent: true`。审批是**阻塞用户工作流**的信号，无论窗口是否
  * 聚焦都必须让用户看到（由 `notifications.ts` 的 `shouldNotify` 保证）。
  *
- * TODO(待真机勘察)：dsh 前端的类名是哈希化的（如 .mna1RW_strip），不可依赖；
- * 需要从真实运行的前端里找出稳定的 data-* / role / aria-* 属性。
- * 在拿到勘察结果前，此值为 null —— 观察器应据此跳过该规则而不是报错。
+ * **来源**：dsh 的审批卡片组件 `dsh-client-ui-approval`（0.1.7-rc.2）里：
+ *
+ * ```js
+ * jsx("div", {
+ *   className: ApprovalPanel_module_css_default.root,   // 哈希化，不可依赖
+ *   "data-approval-key": pending.key,                   // ← 稳定
+ *   "aria-busy": answered,                              // ← 稳定
+ * })
+ * ```
+ *
+ * `answered` 是 `useState(false)`：**初始 false = 等待用户回应**，用户点选后
+ * 置 true（同一组件里 `disabled: answered`、状态点 `answered ? "ongoing" : "warning"`
+ * 都印证了这个语义）。因此「未回答」即「需要提醒用户」。
+ *
+ * **为什么写 `:not([aria-busy="true"])` 而不是 `[aria-busy="false"]`**：
+ * React 对 `aria-*` 的布尔值理论上会字符串化成 `"false"`，但这是框架细节；
+ * 用「非 true」表达同一语义，无论上游渲染成 `"false"` 还是省略该属性都能命中，
+ * 而「已回答」一侧（`"true"`）的排除效果完全相同。
  */
-export const APPROVAL_SELECTOR: string | null = null
+export const APPROVAL_SELECTOR: string | null = '[data-approval-key]:not([aria-busy="true"])'
 
 /**
  * 「新增助手消息」的信号选择器。
@@ -37,8 +52,16 @@ export const APPROVAL_SELECTOR: string | null = null
  * 命中它 → 上报 `urgent: false`，由主进程按 `win.isFocused()` 决定是否真正弹
  * 通知（窗口已聚焦时用户正看着屏幕，再弹一条通知纯属打扰）。
  *
- * TODO(待真机勘察)：同 {@link APPROVAL_SELECTOR}。注意这条是**兜底规则**，
- * 即使它一直填不出来，审批通知（主规则）仍能独立工作。
+ * **暂缓填写，原因已查明**：dsh 的对话流里能标识「一轮回复是否还在进行」的是
+ * `data-streaming`（`dsh-client-ui-chat` 里 `"data-streaming": streaming || void 0`
+ * ——**存在即为流式中，输出结束时该属性消失**）。真正有意义的通知时机是
+ * **「流式结束」**，即该属性**从有到无**，属于**属性变化**而非节点新增。
+ *
+ * 而 `host.ts` 当前的观察器只监听 `childList`（节点增删），观察不到属性变化，
+ * 所以现在填一个节点选择器只会得到「每条消息都触发」的噪音通知——比不通知更糟。
+ *
+ * 要启用它需要先改观察器（加 `attributeFilter` 并处理「属性消失」这一方向），
+ * 那是独立的一步。**它是兜底规则：即使一直留空，审批通知（主规则）也照常工作。**
  */
 export const MESSAGE_SELECTOR: string | null = null
 
