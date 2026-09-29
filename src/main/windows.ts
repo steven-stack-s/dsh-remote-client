@@ -4,6 +4,7 @@ import { partitionNameFor } from './partitions.js'
 import { backoffDelay } from './backoff.js'
 import { shouldHideOnClose } from './lifecycle.js'
 import { reloadTargetFor } from './reload.js'
+import { matchesDevToolsChord, matchesReloadChord, type KeyChord } from './menu-state.js'
 import { tokenHandshakeUrl } from '../shared/host-input.js'
 import type { HostEntry } from '../shared/types.js'
 
@@ -232,19 +233,43 @@ export function createHostWindow(
     setOffline(false)
   }
 
-  // Ctrl+R / Cmd+R 重新加载。Electron 默认不启用该快捷键，需显式注册；
-  // 只挂在主机窗口上，欢迎页等壳自有窗口不受影响。
+  /**
+   * 窗口级快捷键：重新加载（Ctrl/Cmd+R）与 DevTools（Ctrl+Shift+I、
+   * macOS 的 Cmd+Option+I、以及 F12）。
+   *
+   * Electron **默认不提供** DevTools 快捷键——那是 Chrome 的行为，不是 Electron
+   * 的，所以此前用户在客户端里按 Ctrl+Shift+I 毫无反应；而 DevTools 的 Console
+   * 正是运行 `docs/dom-勘察脚本.js`（为通知功能勘察选择器）的唯一入口。
+   *
+   * 只挂在主机窗口上，欢迎页/编辑页不受影响。键位匹配刻意放在 `menu-state.ts`
+   * 的纯函数里：大小写、macOS 用 Command 而非 Ctrl、Shift/Alt 的取舍都容易写错，
+   * 而这里只负责把 Electron 的 `input` 翻译成 `KeyChord`。
+   */
   win.webContents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return
-    // 按住不放会连续触发；重新加载本就是重操作，忽略重复事件。
+    // 按住不放会连续触发；这两个操作都是重操作，忽略重复事件。
     if (input.isAutoRepeat) return
-    if (input.key.toLowerCase() !== 'r') return
-    const acceleratorPressed = process.platform === 'darwin' ? input.meta : input.control
-    if (!acceleratorPressed) return
-    // 不拦截 Shift+Ctrl+R（强制重载语义不同）与 Alt 组合，避免意外吞键。
-    if (input.shift || input.alt) return
-    event.preventDefault()
-    reload()
+
+    const chord: KeyChord = {
+      key: input.key,
+      control: input.control,
+      meta: input.meta,
+      alt: input.alt,
+      shift: input.shift,
+      platform: process.platform,
+    }
+
+    if (matchesDevToolsChord(chord)) {
+      event.preventDefault()
+      // 用 toggle 而非 open：再按一次要能关掉（Chrome 的习惯行为）。
+      win.webContents.toggleDevTools()
+      return
+    }
+
+    if (matchesReloadChord(chord)) {
+      event.preventDefault()
+      reload()
+    }
   })
 
   win.on('closed', () => {

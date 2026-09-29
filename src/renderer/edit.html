@@ -13,11 +13,11 @@
       form { width: 460px; display: grid; gap: 10px; }
       h1 { font-size: 16px; margin: 0 0 6px; }
       label { font-size: 13px; color: #8b949e; }
-      input {
+      input, select {
         padding: 9px 12px; font-size: 14px; border-radius: 8px;
         border: 1px solid #30363d; background: #0d1117; color: #e6edf3;
       }
-      input:disabled { opacity: 0.6; }
+      input:disabled, select:disabled { opacity: 0.6; }
       .row { display: flex; gap: 10px; align-items: center; }
       button {
         padding: 10px; font-size: 14px; border: 0; border-radius: 8px;
@@ -26,6 +26,7 @@
       button.secondary { background: #30363d; }
       button:disabled { opacity: 0.5; cursor: default; }
       p.err { color: #f85149; font-size: 13px; min-height: 18px; margin: 0; }
+      p.ok { color: #3fb950; font-size: 13px; min-height: 18px; margin: 0; }
       p.hint { color: #8b949e; font-size: 12px; line-height: 1.7; margin: 0; }
       .warn {
         display: none; gap: 6px; padding: 10px 12px; border-radius: 8px;
@@ -40,6 +41,10 @@
   <body>
     <form id="form">
       <h1>编辑主机</h1>
+
+      <!-- 主机选择器：编辑窗口不再只能改「当前主机」，可以在这里切换编辑对象。 -->
+      <label for="picker">要编辑的主机</label>
+      <select id="picker"></select>
 
       <label for="label">显示名</label>
       <input id="label" autocomplete="off" placeholder="deepseek-harness-01" />
@@ -60,6 +65,7 @@
       </div>
 
       <p class="err" id="err"></p>
+      <p class="ok" id="saved"></p>
 
       <div class="actions">
         <button type="button" class="secondary" id="cancel">取消</button>
@@ -71,13 +77,18 @@
     <script>
       const form = document.getElementById('form')
       const err = document.getElementById('err')
+      const saved = document.getElementById('saved')
       const warn = document.getElementById('warn')
+      const picker = document.getElementById('picker')
       const labelInput = document.getElementById('label')
       const originInput = document.getElementById('origin')
       const tokenInput = document.getElementById('token')
       const saveBtn = document.getElementById('save')
       const cancelBtn = document.getElementById('cancel')
 
+      /** 当前正在编辑的主机 id；保存时随负载提交（主进程不靠记忆猜目标）。 */
+      let currentId = ''
+      /** 该主机保存前的地址，用于判断「地址改了」并实时提示。 */
       let originalOrigin = ''
 
       // 实时提示：地址一改就警告，不等保存才说。
@@ -86,23 +97,60 @@
       }
       originInput.addEventListener('input', checkOriginChanged)
 
-      window.shell.loadHost().then(host => {
+      /**
+       * 选中一台主机，把它的当前值填进输入框。
+       *
+       * @param {string} hostId - 目标主机 id。
+       */
+      async function selectHost(hostId) {
+        const host = await window.shell.loadHost(hostId)
         if (host === null) {
-          err.textContent = '无法读取主机信息。'
+          err.textContent = '无法读取该主机（可能已被删除）。'
           saveBtn.disabled = true
           return
         }
+        err.textContent = ''
+        saved.textContent = ''
+        saveBtn.disabled = false
+        currentId = host.id
         labelInput.value = host.label
         originInput.value = host.origin
         tokenInput.value = host.launchToken ?? ''
         originalOrigin = host.origin
-      })
+        checkOriginChanged()
+      }
+
+      /**
+       * 重建主机下拉列表。
+       *
+       * @param {string} preferredId - 希望选中的主机 id；不存在（或为空）时选第一台。
+       * @returns {Promise<string>} 实际选中的主机 id；没有主机时为空串。
+       */
+      async function refreshHostOptions(preferredId) {
+        const hosts = await window.shell.listHosts()
+        picker.innerHTML = ''
+        for (const host of hosts) {
+          const option = document.createElement('option')
+          option.value = host.id
+          option.textContent = `${host.label}（${host.origin}）`
+          picker.appendChild(option)
+        }
+        const known = hosts.some(host => host.id === preferredId)
+        const target = known ? preferredId : (hosts.length > 0 ? hosts[0].id : '')
+        if (target !== '') picker.value = target
+        picker.disabled = hosts.length === 0
+        return target
+      }
+
+      picker.addEventListener('change', () => { void selectHost(picker.value) })
 
       form.addEventListener('submit', async event => {
         event.preventDefault()
         err.textContent = ''
+        saved.textContent = ''
         saveBtn.disabled = true
         const result = await window.shell.saveHost({
+          id: currentId,
           label: labelInput.value,
           origin: originInput.value,
           launchToken: tokenInput.value,
@@ -110,10 +158,35 @@
         if (!result.ok) {
           err.textContent = result.message
           saveBtn.disabled = false
+          return
         }
+        // 改地址会重算 id → 下拉列表与自身状态都必须跟着刷新，否则下一次保存
+        // 会指向一条已不存在的记录。
+        saved.textContent = '已保存。'
+        await refreshHostOptions(result.id)
+        await selectHost(result.id)
+        saved.textContent = '已保存。'
       })
 
       cancelBtn.addEventListener('click', () => { window.shell.close() })
+
+      // 初始化：先建列表，再选中主进程给的初始目标；目标不存在（例如刚被删掉）
+      // 时退回列表第一台，而不是让整个窗口报废。
+      void (async () => {
+        const first = await refreshHostOptions('')
+        const initial = await window.shell.loadHost()
+        if (initial !== null) {
+          picker.value = initial.id
+          await selectHost(initial.id)
+          return
+        }
+        if (first === '') {
+          err.textContent = '没有可编辑的主机。'
+          saveBtn.disabled = true
+          return
+        }
+        await selectHost(first)
+      })()
     </script>
   </body>
 </html>

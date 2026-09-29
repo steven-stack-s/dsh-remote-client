@@ -10,11 +10,17 @@ name: 构建 Windows 安装包
 # **不需要安装 Node、pnpm 或任何运行环境**。
 
 on:
-  # 打 tag 即发布（如 git tag v0.1.0 && git push origin v0.1.0）
   push:
+    # 推 main 自动构建，但**只产出 Artifacts、不创建 Release**。
+    # 用途：维护者处于「反复测试完善」阶段时，每次推代码都能直接拿到新包，
+    # 不必去 Actions 页面手动点 Run workflow。
+    branches:
+      - main
+    # 打 tag 才发布（如 git tag v0.1.0 && git push origin v0.1.0）。
+    # 只有这一步会创建 GitHub Release，普通的 main 推送不会。
     tags:
       - 'v*'
-  # 也可在 Actions 页面手动触发，用于试构建
+  # 仍保留手动触发，便于对任意分支试构建
   workflow_dispatch:
 
 permissions:

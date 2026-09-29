@@ -1,10 +1,15 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron'
 import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
-import { createTray, type TrayDeps } from './tray.js'
+import { createTray, type TrayDeps, type TrayHandle } from './tray.js'
 import { installAppMenu, type AppMenuHandle } from './menu.js'
 import { clearHostLoginState } from './host-menu.js'
-import { shouldCloseWindowAfterRemove } from './menu-state.js'
+import {
+  hostAfterEditEffect,
+  shouldCloseWindowAfterRemove,
+  shouldQuitOnAllWindowsClosed,
+  trayOpenAction,
+} from './menu-state.js'
 import { hostIdFromOrigin } from './partitions.js'
 import { applyHostEdit } from '../shared/host-edit.js'
 import { needsRestartFor } from './restart.js'
@@ -36,7 +41,7 @@ let currentWindow: HostWindowHandle | undefined
 /** 内存中的配置镜像，托盘与窗口共用；写盘后同步更新。 */
 let hostsData: HostsFile = { version: 1, hosts: [] }
 let currentHostId: string | undefined
-let tray: Electron.Tray | undefined
+let tray: TrayHandle | undefined
 
 /**
  * Windows 的「应用用户模型 ID」（AppUserModelID）。
@@ -113,7 +118,7 @@ const editWebContentsIds = new Set<number>()
  * 只允许同时存在一个编辑窗口：重复打开会指向同一个被编辑对象，
  * 两个窗口各自保存会互相覆盖，徒增困惑。
  *
- * @param host - 待编辑的主机。
+ * @param host - 初始要编辑的主机（窗口内部可以切换到别的主机）。
  */
 function openEditWindow(host: HostEntry): void {
   if (editWebContentsIds.size > 0) return
@@ -127,9 +132,15 @@ function openEditWindow(host: HostEntry): void {
   })
 }
 
-/** 打开当前主机的编辑窗口；无当前主机时什么都不做。 */
+/**
+ * 打开编辑窗口：优先编辑当前主机。
+ *
+ * 当前主机不存在（例如刚被删掉）时退回列表里的第一台：编辑窗口内部本就可以
+ * 切换编辑对象，为了「没有当前主机」而把入口整个禁掉没有道理——那会让用户
+ * 在还剩好几台主机时完全没有编辑入口。
+ */
 function openEditCurrentHost(): void {
-  const host = hostsData.hosts.find(h => h.id === currentHostId)
+  const host = hostsData.hosts.find(h => h.id === currentHostId) ?? hostsData.hosts[0]
   if (host === undefined) return
   openEditWindow(host)
 }
@@ -142,13 +153,60 @@ function removeCurrentHost(): void {
 }
 
 /**
- * 同时重建托盘菜单与应用菜单。
+ * 刷新壳层外观：托盘图标状态 + 应用菜单栏。
  *
- * 主机增删/切换后必须两条通道都刷新，否则菜单栏会显示过期的主机列表。
+ * 主机增删/切换/离线状态变化后必须刷新，否则菜单栏会显示过期的主机列表、
+ * 托盘图标会停在旧的离线状态。task-14 起托盘菜单固定为两项、与主机配置无关，
+ * 因此托盘这边只需要刷新图标与提示。
  */
-function refreshMenus(): void {
-  ;(tray as unknown as { rebuildMenu?: () => void } | undefined)?.rebuildMenu?.()
+function refreshChrome(): void {
+  tray?.refresh()
   appMenu?.rebuild()
+}
+
+/**
+ * 「打开客户端」（托盘菜单项）。
+ *
+ * 顺序：先唤起任何已存在的窗口（主机窗口在非 darwin 平台关窗后只是被**隐藏**，
+ * 所以正常情况都能唤醒）；一个窗口都没有时才按当前主机重开；连当前主机都没有
+ * （例如刚删光主机）则打开欢迎页——绝不能出现「点了没反应」。
+ *
+ * 该做什么由 `menu-state.ts` 的 `trayOpenAction` 纯函数判定（有单测），
+ * 这里只负责执行。
+ */
+function openClient(): void {
+  const currentHost = hostsData.hosts.find(h => h.id === currentHostId)
+  const windows = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed())
+
+  const action = trayOpenAction({
+    hasWindow: windows.length > 0,
+    hasCurrentHost: currentHost !== undefined,
+  })
+
+  if (action === 'show') {
+    // 优先唤起主机窗口（用户要看的往往是它），否则退到任意一个窗口。
+    const target = (hasHostWindow() ? currentWindow?.win : undefined) ?? windows[0]
+    if (target !== undefined) {
+      // 最小化的窗口 `show()` 不一定能还原，显式 restore 一次。
+      if (target.isMinimized()) target.restore()
+      target.show()
+      target.focus()
+    }
+    return
+  }
+
+  if (action === 'reopen' && currentHost !== undefined) {
+    openHost(currentHost)
+    return
+  }
+
+  // 一个窗口都没有，且没有当前主机可开 → 欢迎页（用户能据此添加主机）。
+  openWelcomeWindow()
+}
+
+/** 当前是否有可用的主机窗口。 */
+function hasHostWindow(): boolean {
+  return currentWindow !== undefined && !currentWindow.win.isDestroyed()
 }
 
 /**
@@ -179,7 +237,7 @@ function openHost(host: HostEntry): void {
         currentWindow?.win.setTitle(`${host.label} — ${title}`)
       }
     },
-    () => { refreshMenus() },
+    () => { refreshChrome() },
     () => quitting,
   )
   currentWindow.win.on('closed', () => { currentWindow = undefined })
@@ -193,7 +251,7 @@ function openHost(host: HostEntry): void {
 async function persist(next: HostsFile): Promise<void> {
   hostsData = next
   await saveHosts(dataDir, next)
-  refreshMenus()
+  refreshChrome()
 }
 
 /**
@@ -240,32 +298,30 @@ async function requestRemoveHost(host: HostEntry): Promise<void> {
     currentWindow = undefined
     currentHostId = undefined
   }
-  refreshMenus()
+  refreshChrome()
 }
 
 /** 清除一台主机的登录态。 */
 function resetHostLoginState(host: HostEntry): void {
   void clearHostLoginState(host)
-    .then(() => { refreshMenus() })
+    .then(() => { refreshChrome() })
     .catch(error => {
       console.error('[dsh-remote-client] 重置登录态失败：', error)
     })
 }
 
-/** 装配托盘；只装配一次。失败被捕获并记录，绝不因此中断启动。 */
+/**
+ * 装配托盘；只装配一次。失败被捕获并记录，绝不因此中断启动。
+ *
+ * task-14 起托盘只有「打开客户端 / 关闭客户端」两项，因此依赖里不再有任何
+ * 主机管理回调——托盘不再读配置，也就不会再出现「菜单与配置不同步」。
+ */
 function installTray(): void {
   if (tray !== undefined) return
   try {
     const deps: TrayDeps = {
-      getData: () => hostsData,
-      setData: next => { void persist(next) },
-      getCurrentId: () => currentHostId,
-      openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
-      onAddHost: () => { openWelcomeWindow() },
       isOffline: () => currentWindow?.isOffline() ?? false,
-      onRetryNow: () => { currentWindow?.retryNow() },
-      onReload: () => { currentWindow?.reload() },
-      onRemoveHost: host => { void requestRemoveHost(host) },
+      onOpen: () => { openClient() },
       onQuit: () => { app.quit() },
     }
     tray = createTray(deps)
@@ -334,7 +390,7 @@ async function boot(): Promise<void> {
     if (host === undefined) {
       // 无主机：打开欢迎页让用户添加第一台。
       hostsData = data
-      refreshMenus()
+      refreshChrome()
       openWelcomeWindow()
       return
     }
@@ -343,7 +399,7 @@ async function boot(): Promise<void> {
     currentHostId = host.id
     await saveHosts(dataDir, touchHost(data, host.id))
     openHost(host)
-    refreshMenus()
+    refreshChrome()
   } catch (error) {
     // 启动过程中任何一步失败都不应让用户面对一个「什么都没有」的应用：
     // 入口已装配，这里把原因显式呈现出来并记录。
@@ -433,10 +489,31 @@ ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
 
 // 编辑窗口的 IPC。同样校验 sender 必须是壳自有的编辑页——远端主机页面
 // 是不可信内容，不得读改主机配置。
-ipcMain.handle('shell:edit:load', event => {
+
+/**
+ * 列出可编辑的主机（供编辑页的主机选择器）。
+ *
+ * 刻意**只返回 label 与 origin**：令牌（launchToken）是凭据，只在该主机被
+ * 选中时由 `shell:edit:load` 单独给出，不做批量下发。
+ */
+ipcMain.handle('shell:edit:list', event => {
+  if (!editWebContentsIds.has(event.sender.id)) return []
+  return hostsData.hosts.map(host => ({ id: host.id, label: host.label, origin: host.origin }))
+})
+
+/**
+ * 读取待编辑主机。
+ *
+ * @param requestedId - 编辑页选中的主机 id；缺省时用窗口的初始目标
+ *   （打开编辑窗口时的那台）。**保存不再依赖这个闭包变量**——见 `shell:edit:save`。
+ */
+ipcMain.handle('shell:edit:load', (event, requestedId: unknown) => {
   if (!editWebContentsIds.has(event.sender.id)) return null
-  const host = hostsData.hosts.find(h => h.id === editingHostId)
+  const id = typeof requestedId === 'string' && requestedId !== '' ? requestedId : editingHostId
+  const host = hostsData.hosts.find(h => h.id === id)
   if (host === undefined) return null
+  // 编辑目标跟随界面选择，后续无参 load 与保存后的善后都以它为准。
+  editingHostId = host.id
   return {
     id: host.id,
     label: host.label,
@@ -452,12 +529,17 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
   if (typeof input !== 'object' || input === null) {
     return { ok: false as const, message: '参数不合法' }
   }
-  const { label, origin, launchToken } = input as Record<string, unknown>
-  if (typeof label !== 'string' || typeof origin !== 'string' || typeof launchToken !== 'string') {
+  const { id, label, origin, launchToken } = input as Record<string, unknown>
+  // id 必填：编辑窗口可以在多台主机间切换，目标必须以**本次提交的负载**为准，
+  // 否则「切到 B 编辑，却改了 A」这种错位迟早会发生。
+  if (
+    typeof id !== 'string' || id === ''
+    || typeof label !== 'string' || typeof origin !== 'string' || typeof launchToken !== 'string'
+  ) {
     return { ok: false as const, message: '参数不合法' }
   }
 
-  const current = hostsData.hosts.find(h => h.id === editingHostId)
+  const current = hostsData.hosts.find(h => h.id === id)
   if (current === undefined) return { ok: false as const, message: '该主机已不存在' }
 
   try {
@@ -474,24 +556,39 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
       return { ok: false as const, message: `该地址已被「${clash.label}」使用，请先删除或改用其他地址。` }
     }
 
+    const editedIsOpenHost = hasHostWindow() && currentHostId === current.id
     await persist(replaceHost(hostsData, current.id, edited))
+    // 改地址会重算 id（id 与 partition 名都由 origin 派生），编辑目标必须跟着换，
+    // 否则下一次保存会指向一条已经不存在的记录。
+    editingHostId = edited.id
 
-    if (originChanged) {
-      // 换地址等于换主机：旧窗口承载的是旧 partition 的会话，保留它会与
-      // 新配置不一致。这里直接销毁，让用户从菜单显式打开新地址。
-      if (currentWindow !== undefined && currentHostId === current.id) {
-        currentWindow.win.destroy()
+    // 「保存后该怎么处理主机窗口」由纯函数判定（有单测）。
+    const effect = hostAfterEditEffect({
+      originChanged,
+      editedIsOpenHost,
+      hasHostWindow: hasHostWindow(),
+    })
+
+    if (effect === 'reopen') {
+      // 换地址等于换主机：旧窗口承载的是旧 partition 的会话，必须销毁。
+      // 但**紧接着就要打开新地址的窗口**——否则此刻只剩编辑窗口，用户一关它
+      // 就一个窗口都不剩，`window-all-closed` 会把客户端退掉（用户报的
+      // 「改地址保存后客户端退出」正是这条路径）。
+      if (editedIsOpenHost) {
+        currentWindow?.win.destroy()
         currentWindow = undefined
         currentHostId = undefined
       }
-    } else if (currentWindow !== undefined && currentHostId === edited.id) {
+      openHost(edited)
+    } else if (effect === 'reload') {
       // 地址没变 → 让窗口生效。必须重放 token 握手：令牌可能刚被更新，
       // 而只加载干净 origin 会用旧的（可能已失效的）cookie。
-      currentWindow.reloadWithToken()
+      currentWindow?.reloadWithToken()
     }
 
-    refreshMenus()
-    return { ok: true as const }
+    refreshChrome()
+    // 把新的 id 回给编辑页：改地址后 id 变了，它要据此刷新选择器与自身状态。
+    return { ok: true as const, id: edited.id }
   } catch (error) {
     return { ok: false as const, message: error instanceof Error ? error.message : String(error) }
   }
@@ -537,9 +634,15 @@ app.on('activate', () => {
 
 // 主机窗口在非 darwin 平台关窗时只会被隐藏，因此本事件在那条路径上不会触发；
 // 真正触发只有两种情况——应用正在退出（quitting，无需再 quit），或窗口被
-// 真正销毁（如 macOS 关窗、或主机被删除/切换）。保留 quit 以维持
-// 「关掉 macOS 最后一个窗口后应用退出」以外的既有语义不变。
+// 真正销毁（如 macOS 关窗、或主机被删除/切换）。
+//
+// task-14 起：**托盘可用时常驻不退出**——托盘有「打开客户端」，用户能自己回来；
+// 只有托盘也没装配成功时才退出，否则应用会变成一个既看不见也无法退出的幽灵进程。
 app.on('window-all-closed', () => {
-  if (quitting) return
-  if (process.platform !== 'darwin') app.quit()
+  const quit = shouldQuitOnAllWindowsClosed({
+    trayAvailable: tray !== undefined,
+    platform: process.platform,
+    quitting,
+  })
+  if (quit) app.quit()
 })

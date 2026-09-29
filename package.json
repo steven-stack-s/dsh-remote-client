@@ -14,11 +14,13 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
+    "icons": "node scripts/generate-icons.mjs",
     "dist:dir": "pnpm build && electron-builder --dir",
     "dist:win": "pnpm build && electron-builder --win --publish never",
     "dist:win:portable": "pnpm build && electron-builder --win portable --publish never"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^26.6.3",
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
