@@ -56,8 +56,8 @@ pnpm dev         # 启动客户端（需要图形环境）
 - **cookie 名绑定 authority**（`dsh-auth-` + `sha256(authority)`），因此换 IP / 换域名访问会被视为**新主机**，需要重新登录。
 - `unsafely-treat-insecure-origin-as-secure` **只能在启动时设置**，所以运行时新增 `http://` 主机后需重启客户端生效；`https://` 主机不受影响。
 - 明文 HTTP 链路上 dsh 的会话 cookie 不带 `Secure` 属性，跨网络部署建议配 HTTPS 反向代理。
-- 原生通知（审批请求 / 任务完成）尚未实现，属于阶段 2。
-- 重命名主机推迟到阶段 2（添加主机时可填显示名，默认取 origin 去掉协议前缀）。
+- 原生通知：基础设施已完成（信号去重、焦点判定、Windows `AppUserModelId`、点击唤起窗口），**但触发用的 DOM 选择器仍需真机勘察**——`src/preload/selectors.ts` 里为 `null` 时功能完全静默（不注册观察器），不会干扰正常使用。勘察脚本见 [`docs/dom-勘察脚本.js`](docs/dom-勘察脚本.js)。
+- 主机重命名已可用：「编辑(E)」→「编辑主机…」可改显示名、地址与 launch token。
 - **安装包未做代码签名**，最终用户首次运行会遇到 SmartScreen「未知发布者」提示（见下）。
 
 ---
@@ -105,9 +105,9 @@ git tag v0.1.0 && git push origin v0.1.0
 
 ## 状态
 
-阶段 1（核心链路）：多主机配置与切换、登录态隔离与保持、直载窗口、离线覆盖页与**指数退避自动重连**（1s→2s→…→30s，网络恢复即刻重试）、托盘管理（含「离线变灰」与关窗驻留）、**Windows 安装包**。
+**已实现**：多主机配置与切换、登录态隔离与保持、直载窗口、离线覆盖页与**指数退避自动重连**（1s→2s→…→30s，网络恢复即刻重试）、**launch token 免插件接入**（未装认证插件的 dsh 靠它接入，已经真机验证）、应用菜单栏（主机管理 + 编辑主机窗口，可切换编辑任意一台）、精简托盘（仅「打开客户端 / 关闭客户端」）、**DeepSeek 鲸鱼图标**（随系统主题变色）、`Ctrl+Shift+I` / `F12` 开 DevTools、**Windows 安装包（CI 构建）**。
 
-阶段 2（计划中）：原生通知、launch token 免插件接入、主机重命名。
+**待完成**：原生通知的 DOM 选择器（需真机勘察，见上）。
 
 设计规格见 [`docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md`](docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md)（§14 记录了实现期发现并修复的 8 个真实缺陷），
 实施计划见 [`docs/superpowers/plans/2026-09-28-stage1-core.md`](docs/superpowers/plans/2026-09-28-stage1-core.md)。
