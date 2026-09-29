@@ -9,14 +9,17 @@ import {
   editMenuLayout,
   emptyHostsPlaceholder,
   hostAfterEditEffect,
+  matchesCloseChord,
   matchesDevToolsChord,
   matchesReloadChord,
   navigationOutcome,
   shouldQuitOnAllWindowsClosed,
+  shouldRemoveWindowMenuBar,
   trayIconVariant,
   trayMenuItemKinds,
   trayOpenAction,
   windowOpenDecision,
+  windowTitleFor,
   type KeyChord,
 } from '../src/main/menu-state.js'
 import { partitionNameFor } from '../src/main/partitions.js'
@@ -452,5 +455,81 @@ describe('navigationOutcome（task-16：401 之后是否回放 token）', () => 
       hasLaunchToken: true,
       alreadyReplayed: false,  // updateHost() 之后重新武装
     })).toBe('replay-token')
+  })
+})
+
+describe('windowTitleFor（task-17：内容窗口标题要带主机名前缀）', () => {
+  it('拼成「主机名 — 页面标题」', () => {
+    expect(windowTitleFor('家里的 NAS', 'DeepSeek Harness'))
+      .toBe('家里的 NAS — DeepSeek Harness')
+  })
+
+  it('拿不到页面标题时退化为纯主机名（不能留悬挂的分隔符）', () => {
+    expect(windowTitleFor('家里的 NAS', '')).toBe('家里的 NAS')
+    expect(windowTitleFor('家里的 NAS', '   ')).toBe('家里的 NAS')
+  })
+
+  it('页面标题两侧空白被裁掉', () => {
+    expect(windowTitleFor('NAS', '  会话  ')).toBe('NAS — 会话')
+  })
+
+  it('页面标题自身含分隔符时原样保留', () => {
+    expect(windowTitleFor('NAS', '修复 — 登录')).toBe('NAS — 修复 — 登录')
+  })
+})
+
+describe('matchesCloseChord（task-17：Ctrl/Cmd+W 关闭内容窗口）', () => {
+  const chord = (over: Partial<KeyChord> = {}): KeyChord => ({
+    key: 'w',
+    control: false,
+    meta: false,
+    alt: false,
+    shift: false,
+    platform: 'win32',
+    ...over,
+  })
+
+  it('Windows/Linux：Ctrl+W 命中', () => {
+    expect(matchesCloseChord(chord({ control: true }))).toBe(true)
+  })
+
+  it('macOS：Cmd+W 命中，Ctrl+W 不命中（与其它快捷键同一套修饰键规则）', () => {
+    expect(matchesCloseChord(chord({ platform: 'darwin', meta: true }))).toBe(true)
+    expect(matchesCloseChord(chord({ platform: 'darwin', control: true }))).toBe(false)
+  })
+
+  it('无修饰键的 W 不命中（否则会吞掉页面里的普通输入）', () => {
+    expect(matchesCloseChord(chord())).toBe(false)
+  })
+
+  it('不吞 Shift/Alt 组合（Ctrl+Shift+W 语义不同）', () => {
+    expect(matchesCloseChord(chord({ control: true, shift: true }))).toBe(false)
+    expect(matchesCloseChord(chord({ control: true, alt: true }))).toBe(false)
+  })
+
+  it('大小写不敏感', () => {
+    expect(matchesCloseChord(chord({ key: 'W', control: true }))).toBe(true)
+  })
+
+  it('与其它快捷键互不误触', () => {
+    const ctrlW = chord({ control: true })
+    expect(matchesReloadChord(ctrlW)).toBe(false)
+    expect(matchesDevToolsChord(ctrlW)).toBe(false)
+    expect(matchesCloseChord(chord({ key: 'r', control: true }))).toBe(false)
+    expect(matchesCloseChord(chord({ key: 'i', control: true, shift: true }))).toBe(false)
+  })
+})
+
+describe('shouldRemoveWindowMenuBar（task-17：非主机窗口不要菜单栏）', () => {
+  it('Windows / Linux → 移除（菜单栏属于窗口）', () => {
+    expect(shouldRemoveWindowMenuBar('win32')).toBe(true)
+    expect(shouldRemoveWindowMenuBar('linux')).toBe(true)
+  })
+
+  it('macOS → 不移除（菜单栏属于应用，setMenu/removeMenu 在 darwin 上无效）', () => {
+    // 这是 Electron 的平台约束（这两个 API 都标注 @platform linux,win32）。
+    // 强行去动应用级菜单会连带弄掉主机窗口的菜单，所以这里保持现状——
+    // macOS 上「窗口在看着 A、菜单在操作主机窗口」这个差异是平台限制。
+    expect(shouldRemoveWindowMenuBar('darwin')).toBe(false)
   })
 })

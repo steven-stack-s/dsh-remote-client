@@ -348,6 +348,25 @@ export function matchesDevToolsChord(chord: KeyChord): boolean {
 }
 
 /**
+ * 是否为「关闭当前窗口」（Ctrl/Cmd+W）。
+ *
+ * 只用于**内容窗口**（页面自己打开的 dsh 窗口）：那是浏览器的通行习惯，
+ * 用户按 Ctrl+W 时期待的是「关掉这个窗口」。
+ *
+ * 主机窗口刻意不接：它的关窗是「隐藏到托盘」（见 `lifecycle.ts`），
+ * 一个误触就让人以为应用没了；而且它是应用的主窗口，不该被一个浏览器习惯关掉。
+ *
+ * @param chord - 按键组合。
+ * @returns 匹配时返回 true。
+ */
+export function matchesCloseChord(chord: KeyChord): boolean {
+  if (chord.key.toLowerCase() !== 'w') return false
+  // 不吞 Shift/Alt 组合（`Ctrl+Shift+W` 在浏览器里是「关闭所有标签页」，语义不同）。
+  if (chord.shift || chord.alt) return false
+  return primaryModifierPressed(chord)
+}
+
+/**
  * 所有窗口都关闭后，是否应当退出应用。
  *
  * 规则（顺序即优先级）：
@@ -372,6 +391,43 @@ export function shouldQuitOnAllWindowsClosed(input: {
   if (input.quitting) return false
   if (input.trayAvailable) return false
   return input.platform !== 'darwin'
+}
+
+/**
+ * 拼一个窗口的标题：`主机名 — 页面标题`。
+ *
+ * 「主机名」前缀的作用是让用户一眼看出**这个窗口属于哪台主机**（多主机、多窗口时
+ * 尤其重要：内容窗口的页面标题往往完全看不出是哪台机器）。
+ *
+ * 页面标题为空时退化为纯主机名——窗口标题宁可信息少，也不能是 `主机名 — ` 这种
+ * 带悬挂分隔符的残缺样子。
+ *
+ * @param hostLabel - 主机显示名（配置保证非空）。
+ * @param pageTitle - 页面 `document.title`，可能为空。
+ * @returns 窗口标题。
+ */
+export function windowTitleFor(hostLabel: string, pageTitle: string): string {
+  const title = pageTitle.trim()
+  return title === '' ? hostLabel : `${hostLabel} — ${title}`
+}
+
+/**
+ * 是否移除某个非主机窗口的菜单栏。
+ *
+ * **macOS 例外是硬约束**：macOS 的菜单栏属于**应用**（`Menu.setApplicationMenu`），
+ * 没有「按窗口设置/移除」这回事——`BrowserWindow.setMenu()` / `removeMenu()` 在
+ * Electron 里都标注为 `@platform linux,win32`，在 darwin 上调用没有效果。
+ * 若在 macOS 上强行动应用级菜单，会连带把主机窗口的菜单也弄掉，那是得不偿失的。
+ *
+ * 于是 macOS 上保留了「窗口在看着 A、菜单在操作主机窗口」这个已知差异；这是平台
+ * 限制，不是可以靠代码消除的缺陷。真正的消除办法是按焦点窗口动态启用/禁用菜单项
+ * （需要改 `menu.ts`），不在本次范围内。
+ *
+ * @param platform - `process.platform`。
+ * @returns 应移除菜单栏时返回 true（即 Windows/Linux）。
+ */
+export function shouldRemoveWindowMenuBar(platform: string): boolean {
+  return platform !== 'darwin'
 }
 
 /** 页面发起打开新窗口时，该在应用内打开还是交给系统。 */

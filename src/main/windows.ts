@@ -5,10 +5,13 @@ import { shouldHideOnClose } from './lifecycle.js'
 import { reloadTargetFor } from './reload.js'
 import {
   contentWindowWebPreferences,
+  matchesCloseChord,
   matchesDevToolsChord,
   matchesReloadChord,
   navigationOutcome,
+  shouldRemoveWindowMenuBar,
   windowOpenDecision,
+  windowTitleFor,
   type KeyChord,
 } from './menu-state.js'
 import { tokenHandshakeUrl } from '../shared/host-input.js'
@@ -37,7 +40,8 @@ const HOST_PRELOAD = join(here, '../preload/host.cjs')
 
 /**
  * 给某个 webContents 挂上窗口快捷键：`Ctrl/Cmd+R` 重新加载、
- * `Ctrl+Shift+I`（macOS `Cmd+Option+I`）/ `F12` 开关 DevTools。
+ * `Ctrl+Shift+I`（macOS `Cmd+Option+I`）/ `F12` 开关 DevTools，
+ * 以及（仅内容窗口）`Ctrl/Cmd+W` 关闭。
  *
  * 主机窗口与「页面自己打开的内容窗口」共用这一份实现：两处行为必须一致，
  * 否则子窗口里按 F12 没反应会显得像 bug。快捷键的匹配逻辑在 `menu-state.ts`
@@ -46,8 +50,14 @@ const HOST_PRELOAD = join(here, '../preload/host.cjs')
  *
  * @param contents - 目标 webContents。
  * @param onReload - 命中「重新加载」时执行的动作。
+ * @param onClose - 命中「关闭窗口」时执行的动作；**只有内容窗口传**，
+ *   主机窗口的关窗语义是「隐藏到托盘」，不该被一个浏览器习惯触发。
  */
-function installWindowShortcuts(contents: WebContents, onReload: () => void): void {
+function installWindowShortcuts(
+  contents: WebContents,
+  onReload: () => void,
+  onClose?: () => void,
+): void {
   contents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return
     // 按住不放会连续触发；这两个操作都是重操作，忽略重复事件。
@@ -69,6 +79,12 @@ function installWindowShortcuts(contents: WebContents, onReload: () => void): vo
       return
     }
 
+    if (onClose !== undefined && matchesCloseChord(chord)) {
+      event.preventDefault()
+      onClose()
+      return
+    }
+
     if (matchesReloadChord(chord)) {
       event.preventDefault()
       onReload()
@@ -83,13 +99,16 @@ function installWindowShortcuts(contents: WebContents, onReload: () => void): vo
  * （见本文件里的 `overrideBrowserWindowOptions`），父窗口的事件**不会自动继承**，
  * 只能在这里补挂。
  *
- * 与主机窗口有两点**刻意的不同**：
+ * 与主机窗口有三点**刻意的不同**：
  * - **不挂 `close` 拦截**：它是内容窗口，关掉就该关掉，不驻留托盘（那套
  *   「关窗后仍能被唤起」的语义只属于主机窗口）；
  * - **不进 `currentWindow` / `currentHostId`**：那套「同一时刻只有一台主机窗口」
- *   的模型只属于主机窗口，把子窗口塞进去会让重试、离线页、菜单项全部指错对象。
+ *   的模型只属于主机窗口，把子窗口塞进去会让重试、离线页、菜单项全部指错对象；
+ * - **不要菜单栏**：菜单项全部作用于主机窗口，在内容窗口上点它们会去操作
+ *   另一个窗口（见下方 `removeMenu()` 处的说明）。
  *
- * 子窗口里再开窗口（孙窗口）同样会被接管：不这样，第二层弹窗又会丢掉登录态。
+ * 子窗口里再开窗口（孙窗口）同样会被接管：不这样，第二层弹窗又会丢掉登录态、
+ * 又会长出菜单栏。
  *
  * @param child - 新建的内容窗口。
  * @param getHost - **取当前主机配置**的函数（不是值）。用取值函数而非快照，
@@ -97,16 +116,45 @@ function installWindowShortcuts(contents: WebContents, onReload: () => void): vo
  *   （主机被重命名后仍显示旧名字，与主机窗口持有的快照缺陷是同一类问题）。
  */
 function installContentWindowBehavior(child: BrowserWindow, getHost: () => HostEntry): void {
-  // 标题沿用主机窗口的约定，任务栏里能看出这个窗口属于哪台主机。
-  child.on('page-title-updated', (_event, title) => {
-    if (title !== '') child.setTitle(`${getHost().label} — ${title}`)
+  // 菜单栏只该长在主机窗口上：菜单项（打开/重新加载/立即重试/重置登录态/删除…）
+  // 全部作用于 `currentWindow` / `currentHostId`。内容窗口若继承菜单栏，用户在
+  // 这里点「重新加载」，被重载的却是**另一个窗口**——操作与所见不符。
+  // macOS 上菜单栏是应用级的，`removeMenu()` 无效（见 shouldRemoveWindowMenuBar）。
+  if (shouldRemoveWindowMenuBar(process.platform)) child.removeMenu()
+
+  // 初始标题：此刻页面标题还没解析出来（`getTitle()` 只会给出占位值），
+  // 所以先用主机名兜底，随后由 page-title-updated 补成「主机名 — 页面标题」。
+  child.setTitle(windowTitleFor(getHost().label, ''))
+
+  child.on('page-title-updated', (event, title) => {
+    // **必须 preventDefault**：Electron 的默认行为是在本事件之后把原生标题设成
+    // 文档标题（官方类型定义：「calling event.preventDefault() will prevent the
+    // native window's title from changing」），那会把我们刚拼好的
+    // 「主机名 — 页面标题」立刻覆盖成裸的页面标题——用户截图里子窗口标题只剩
+    // `DeepSeek Harness` 正是这个原因（不只是事件时序）。
+    event.preventDefault()
+    child.setTitle(windowTitleFor(getHost().label, title))
+  })
+
+  // 兜底：子窗口由 Electron 代为创建，`page-title-updated` 有可能在本监听挂上
+  // **之前**就已触发。页面加载完成后再用真实的文档标题拼一次，任何时序下都对。
+  child.webContents.on('did-finish-load', () => {
+    if (child.isDestroyed()) return
+    child.setTitle(windowTitleFor(getHost().label, child.webContents.getTitle()))
   })
 
   // 子窗口的「重新加载」是**普通重载**，而不是主机窗口的「重新请求 host.origin」：
   // 子窗口里显示的往往已是别的站点（门户、文档），把它换回 dsh 不是用户要的。
-  installWindowShortcuts(child.webContents, () => {
-    if (!child.isDestroyed()) child.webContents.reload()
-  })
+  // `Ctrl+W` 关闭是浏览器的通行习惯，只在这里（内容窗口）提供。
+  installWindowShortcuts(
+    child.webContents,
+    () => {
+      if (!child.isDestroyed()) child.webContents.reload()
+    },
+    () => {
+      if (!child.isDestroyed()) child.close()
+    },
+  )
 
   // 递归接管：孙窗口同样共享 partition 与 preload。
   child.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, getHost()))
@@ -482,6 +530,10 @@ export function createOfflineWindow(title: string, reason: string): BrowserWindo
 /**
  * 创建「添加主机」欢迎窗口。
  *
+ * 移除窗口菜单栏：这张表上唯一还有意义的项是「添加主机…」，而它打开的正是本窗口
+ * 的另一个副本（`openWelcomeWindow` 不做去重）；其余菜单项都作用于主机窗口，
+ * 在这里点它们同样属于「操作与所见不符」。规则统一为**菜单栏只长在主机窗口上**。
+ *
  * @returns 已开始加载的窗口。
  */
 export function createWelcomeWindow(): BrowserWindow {
@@ -494,6 +546,7 @@ export function createWelcomeWindow(): BrowserWindow {
       preload: join(here, '../preload/welcome.cjs'),
     },
   })
+  if (shouldRemoveWindowMenuBar(process.platform)) win.removeMenu()
   void win.loadFile(WELCOME_PAGE)
   return win
 }
@@ -504,6 +557,10 @@ export function createWelcomeWindow(): BrowserWindow {
  * 窗口自身不承载主机数据——渲染进程通过 `shell:edit:load` 从主进程读取，
  * 主进程用「当前被编辑的主机 id」而非 URL 参数来定位对象，避免把令牌
  * 之类敏感值写进 URL（URL 会留在历史与日志里）。
+ *
+ * 移除窗口菜单栏：菜单里的「删除主机…」作用于**当前主机**，而本窗口正在编辑的
+ * 可能是**另一台**（task-14 起窗口内可切换编辑对象）——菜单栏留在这里会让人
+ * 在编辑 B 的时候删掉 A。编辑对象请用窗口内的主机选择器。
  *
  * @returns 已开始加载的窗口。
  */
@@ -518,6 +575,7 @@ export function createEditWindow(): BrowserWindow {
       preload: join(here, '../preload/edit.cjs'),
     },
   })
+  if (shouldRemoveWindowMenuBar(process.platform)) win.removeMenu()
   void win.loadFile(EDIT_PAGE)
   return win
 }
