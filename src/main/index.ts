@@ -235,6 +235,10 @@ function openHost(host: HostEntry): void {
   currentHostId = host.id
   currentWindow = createHostWindow(
     host,
+    // 链接分流用的已知主机列表**从这里注入**：`hostsData` 属于主进程，
+    // `windows.ts` 不该反向依赖 index.ts（见 createHostWindow 的说明）。
+    // 每次判定现取，因此增删主机后立刻生效。
+    () => hostsData.hosts.map(entry => entry.origin),
     title => {
       // 离线期间标题由重试倒计时接管，不让页面标题覆盖掉状态提示。
       if (title !== '' && currentWindow?.isOffline() === false) {

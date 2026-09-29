@@ -5,6 +5,7 @@ import { shouldHideOnClose } from './lifecycle.js'
 import { reloadTargetFor } from './reload.js'
 import {
   contentWindowWebPreferences,
+  isSameAddress,
   matchesCloseChord,
   matchesDevToolsChord,
   matchesReloadChord,
@@ -95,9 +96,18 @@ function installWindowShortcuts(
 /**
  * 给「页面自己打开的内容窗口」补上与主机窗口一致的基础能力。
  *
- * 这类窗口由 Electron 依据 `setWindowOpenHandler` 的 `allow` 代为创建
- * （见本文件里的 `overrideBrowserWindowOptions`），父窗口的事件**不会自动继承**，
- * 只能在这里补挂。
+ * ⚠️ **当前不可达（dead code，有意保留）**
+ * 自 task-18 起，`installWindowOpenPolicy` 对 `window.open` **一律 `deny`**：
+ * 指向已知主机/当前站点的链接在**当前窗口**内导航，其余交给系统浏览器。既然
+ * 从不返回 `allow`，Electron 就不会再为我们的 webContents 创建窗口，
+ * `did-create-window` 也就不会触发——下面这段因此没有调用者。
+ *
+ * 保留的理由（而不是删掉）：
+ * - 用户在「新窗口 / 替换原窗口」这条策略上已经改过一次主意（task-15 → task-18），
+ *   将来若再改回「新窗口打开」，子窗口的标题、菜单栏、快捷键、递归接管都已就位，
+ *   不会重演 task-17 里「子窗口带菜单栏 / 标题缺前缀」那两个缺陷；
+ * - 保留成本只是这段代码本身，没有运行时开销。
+ * 代价是它现在处于不可达状态——**如实标注在此，避免读者误以为它还在生效**。
  *
  * 与主机窗口有三点**刻意的不同**：
  * - **不挂 `close` 拦截**：它是内容窗口，关掉就该关掉，不驻留托盘（那套
@@ -112,10 +122,16 @@ function installWindowShortcuts(
  *
  * @param child - 新建的内容窗口。
  * @param getHost - **取当前主机配置**的函数（不是值）。用取值函数而非快照，
- *   是为了让子窗口的标题前缀与孙窗口的 partition 始终跟随主机配置的最新值
- *   （主机被重命名后仍显示旧名字，与主机窗口持有的快照缺陷是同一类问题）。
+ *   是为了让子窗口的标题前缀始终跟随主机配置的最新值（主机被重命名后仍显示旧
+ *   名字，与 task-16 修掉的那类快照缺陷同源）。
+ * @param getKnownHostOrigins - 取「已配置主机 origin 列表」的函数，透传给孙窗口的
+ *   链接策略（见 `installWindowOpenPolicy`）。
  */
-function installContentWindowBehavior(child: BrowserWindow, getHost: () => HostEntry): void {
+function installContentWindowBehavior(
+  child: BrowserWindow,
+  getHost: () => HostEntry,
+  getKnownHostOrigins: () => readonly string[],
+): void {
   // 菜单栏只该长在主机窗口上：菜单项（打开/重新加载/立即重试/重置登录态/删除…）
   // 全部作用于 `currentWindow` / `currentHostId`。内容窗口若继承菜单栏，用户在
   // 这里点「重新加载」，被重载的却是**另一个窗口**——操作与所见不符。
@@ -156,41 +172,93 @@ function installContentWindowBehavior(child: BrowserWindow, getHost: () => HostE
     },
   )
 
-  // 递归接管：孙窗口同样共享 partition 与 preload。
-  child.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, getHost()))
+  // 递归接管：孙窗口同样共享 partition 与 preload、同样不接管菜单栏。
+  installWindowOpenPolicy(child.webContents, getKnownHostOrigins)
   child.webContents.on('did-create-window', grandchild => {
-    installContentWindowBehavior(grandchild, getHost)
+    installContentWindowBehavior(grandchild, getHost, getKnownHostOrigins)
   })
 }
 
 /**
- * `setWindowOpenHandler` 的返回值：http/https 在应用内开（并继承登录态），
- * 其余协议交给系统。
+ * 给一个 webContents 装上「新窗口」策略。
  *
- * 抽成函数是因为主机窗口与各级子窗口都要用同一套规则——两边漂移会让
- * 「第二层弹窗被扔到系统浏览器」这类问题重新出现。
+ * 一律 `deny`，然后由我们自己做该做的事：
+ * - 目标是**已知主机**或**当前站点** → 在当前窗口 `loadURL`，即用户要的
+ *   「替换原窗口」（门户桌面上的 dsh 图标正是这种情况）；
+ * - 其余（真外链、`mailto:`、自定义 scheme）→ 交给系统浏览器。
  *
- * @param url - 目标 URL。
- * @param host - 所属主机（决定继承哪个 partition）。
- * @returns Electron 的窗口打开决策。
+ * 为什么用 `deny` 而不是 `allow`：`allow` 只会让 Electron 另开一个窗口，做不到
+ * 「替换当前窗口」；而且 task-15 那套「子窗口继承 partition」的复杂度（重挂标题、
+ * 菜单栏、快捷键、递归接管）也就随之而来。
+ *
+ * **`deny` 的代价（已逐条评估）**：`window.open()` 会返回 `null`。
+ * - 页面若写成 `const w = window.open(url); if (!w) location.href = url`，那么除
+ *   我们的 `loadURL` 之外，页面还会自己再导航一次——**两次导航指向同一个地址**。
+ *   后果：Chromium 用后发起的那次取代前一次，最终**只加载一次**、落在正确地址上；
+ *   被取代的那次以 `ERR_ABORTED` 结束，`loadURL` 的 Promise 因此会**拒绝**
+ *   （所以下面必须 `.catch()`，否则是未处理的 rejection），而 `did-fail-load`
+ *   那边早已忽略错误码 -3，不会误判成离线页；页面的降级是**顶层导航**，不会再
+ *   进入本处理器——**不存在导航循环**。净代价只是一次可能被中止的幂等 GET。
+ * - 页面若紧接着使用返回值（如 `w.focus()`），会抛 TypeError。这是 `deny` 无法
+ *   避免的代价——Electron 没有「不开窗口但仍返回 WindowProxy」的接口；影响面仅
+ *   限于该页面自身的一个 JS 报错，而窗口的导航已经由我们完成。
+ * 两条都不足以推翻「必须替换当前窗口」这个用户要求，故采用 `deny`。
+ *
+ * 刻意**不做**「延迟一拍再导航」之类的规避：那会让最终生效的变成**页面**自己那次
+ * 导航，时序反而更难预测；立即导航的结果是确定的。
+ *
+ * 主机窗口与（当前不可达的）内容窗口共用这一份实现，避免两处策略漂移。
+ *
+ * @param contents - 目标 webContents。
+ * @param getKnownHostOrigins - 取「已配置主机 origin 列表」的函数（主进程注入）。
  */
-function windowOpenHandlerResult(
-  url: string,
-  host: HostEntry,
-): { action: 'deny' } | { action: 'allow', overrideBrowserWindowOptions: Electron.BrowserWindowConstructorOptions } {
-  if (windowOpenDecision(url) === 'external') {
-    // mailto:/tel:/自定义 scheme 交给系统；`file:`/`javascript:` 也走这里，
-    // 它们是安全边界，不该在应用内开窗（见 menu-state.ts 的 windowOpenDecision）。
+function installWindowOpenPolicy(
+  contents: WebContents,
+  getKnownHostOrigins: () => readonly string[],
+): void {
+  contents.setWindowOpenHandler(({ url }) => {
+    const decision = windowOpenDecision({
+      url,
+      // **实时**取当前页面的 origin：窗口导航到门户之后，当前页已经不是创建时
+      // 那台主机的地址了，用 `host.origin` 会把站点内跳转全判成外链。
+      currentOrigin: currentOriginOf(contents),
+      knownHostOrigins: getKnownHostOrigins(),
+    })
+
+    if (decision === 'navigate-self') {
+      // 已经在目标地址上就不必再载一次：页面把当前地址当新窗口打开时，
+      // 重载纯属浪费，而 dsh 是 SPA，重载会丢掉当前会话的界面状态。
+      if (!isSameAddress(contents.getURL(), url)) {
+        // `.catch` 是必需的，不是保险：这次导航可能被页面自己紧接着发起的导航
+        // 取代（见上面 `deny` 代价里的降级写法），此时 Promise 以 ERR_ABORTED
+        // 拒绝——那不是错误，只是「页面自己已经导航过去了」。
+        void contents.loadURL(url).catch(() => undefined)
+      }
+      return { action: 'deny' }
+    }
+
+    // 真外链与 mailto:/tel:/自定义 scheme：交给系统。
     void shell.openExternal(url).catch(() => undefined)
     return { action: 'deny' }
-  }
-  return {
-    action: 'allow',
-    overrideBrowserWindowOptions: {
-      // 与主机窗口**同一个函数**产出：partition 必然一致（这是本任务的核心），
-      // 三项沙箱开关也一致。见 menu-state.ts 的 contentWindowWebPreferences。
-      webPreferences: contentWindowWebPreferences({ origin: host.origin, preload: HOST_PRELOAD }),
-    },
+  })
+}
+
+/**
+ * 取某个 webContents **当前**页面所在 origin（已规范化）。
+ *
+ * 取不到时返回空串，由 `windowOpenDecision` 判定第 4 条不参与——还没提交任何导航、
+ * 或者当前是壳自有的 `file://` 页面（离线页）时都属于这种情况。
+ *
+ * @param contents - 目标 webContents。
+ * @returns 规范化后的 origin；取不到时为空串。
+ */
+function currentOriginOf(contents: WebContents): string {
+  const url = contents.getURL()
+  if (url === '') return ''
+  try {
+    return new URL(url).origin
+  } catch {
+    return ''
   }
 }
 
@@ -233,6 +301,12 @@ export interface HostWindowHandle {
  *
  * @param initialHost - 初始主机配置。**只是初始值**：之后可用句柄的
  *   `updateHost()` 更新（窗口内部持有可变状态，不会停在创建时的快照）。
+ * @param getKnownHostOrigins - 取「已配置主机 origin 列表」的函数，用于判定页面
+ *   里的链接该不该在**本窗口**打开（见 `windowOpenDecision`）。**由主进程注入**：
+ *   主机配置存在 `index.ts` 的 `hostsData` 里，`windows.ts` 不该反向依赖它。
+ *   传函数而不是数组快照，是因为窗口存活期间主机可能被增删改。
+ *   刻意放在必填位置（无默认值）：漏注入不会报错，只会静默地把所有跨站链接
+ *   判成外链——那正是用户抱怨的症状之一，宁可让类型检查逼调用方显式给出。
  * @param onTitle - 页面标题变化回调，供窗口标题与托盘显示当前会话。
  * @param onOfflineChange - 离线状态变化回调，供托盘更新提示。
  * @param isQuitting - 应用是否正在真正退出；退出时放行 close，其余情况隐藏。
@@ -240,6 +314,7 @@ export interface HostWindowHandle {
  */
 export function createHostWindow(
   initialHost: HostEntry,
+  getKnownHostOrigins: () => readonly string[],
   onTitle: (title: string) => void,
   onOfflineChange: (offline: boolean) => void = () => undefined,
   isQuitting: () => boolean = () => false,
@@ -280,21 +355,25 @@ export function createHostWindow(
 
   // 页面自己发起的 `window.open()` / `<a target="_blank">`。
   //
-  // **必须显式接管**：Electron 不会让新窗口继承本窗口的 `partition`，于是新窗口
-  // 落在另一个 session 里——cookie 全空，用户看到的是一个未登录的 dsh；preload
-  // 也不会带上，离线检测与通知观察器随之全失效。所以这里显式把父窗口的
-  // `partition` 与 `preload` 交给 `overrideBrowserWindowOptions`。
+  // 策略（task-18 起）：**指向已知主机或当前站点的链接在本窗口内导航**（用户要的
+  // 「替换原窗口」，门户桌面上的 dsh 图标正是这种），**其余交给系统浏览器**
+  // （GitHub 之类真外链不该困在客户端里）。
   //
-  // 历史教训（用户真机反馈「点门户桌面上的 dsh 图标会跳到系统浏览器」）：
-  // 这段代码原本是「一律 deny + openExternal」，注释还写着「外部链接交给系统
-  // 浏览器，绝不在壳内开新窗口」——听起来很稳妥，实际后果是**页面里的每一个
-  // 链接都被扔出应用**，用户根本没法在客户端里点开任何东西。
-  win.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, host))
+  // 历史（三次策略变更，都源于真机反馈）：
+  // 1. 阶段 1：一律 `deny` + `openExternal` —— 后果是**页面里每个链接都被扔出
+  //    应用**，用户根本点不开门户里的 dsh 图标；
+  // 2. task-15：改成一律 `allow` 并让子窗口继承 partition —— 能开了，但开成了
+  //    **新窗口**，且外链也被留在客户端里；
+  // 3. task-18（当前）：按「是不是我们认识的地址」分流，内部链接替换当前窗口。
+  installWindowOpenPolicy(win.webContents, getKnownHostOrigins)
 
-  // `allow` 出来的窗口由 Electron 创建，构造参数之外的行为只能在这里补挂。
+  // ⚠️ 当前不可达：上面的策略一律返回 `deny`，Electron 不会再替我们创建窗口，
+  // 因此这个事件不会触发（详见 `installContentWindowBehavior` 的说明）。
+  // 保留是为了「将来改回新窗口策略」时行为已就位。
+  //
   // 传取值函数而不是当前的 host 值：子窗口存活期间主机可能被重命名。
   win.webContents.on('did-create-window', child => {
-    installContentWindowBehavior(child, () => host)
+    installContentWindowBehavior(child, () => host, getKnownHostOrigins)
   })
 
   let attempt = 0

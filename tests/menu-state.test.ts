@@ -12,6 +12,7 @@ import {
   matchesCloseChord,
   matchesDevToolsChord,
   matchesReloadChord,
+  isSameAddress,
   navigationOutcome,
   shouldQuitOnAllWindowsClosed,
   shouldRemoveWindowMenuBar,
@@ -331,49 +332,125 @@ describe('shouldQuitOnAllWindowsClosed（#3：加固）', () => {
   })
 })
 
-describe('windowOpenDecision（#task-15：新窗口该在应用内开还是交给系统）', () => {
-  it('https / http → 在应用内打开（用户就是要在客户端里用 dsh）', () => {
-    expect(windowOpenDecision('https://example.com/')).toBe('in-app')
-    expect(windowOpenDecision('https://oray.com:8443/portal?x=1#y')).toBe('in-app')
-    expect(windowOpenDecision('http://192.168.1.10:3080/')).toBe('in-app')
+describe('windowOpenDecision（task-18：指向已知主机则替换当前窗口，外链走浏览器）', () => {
+  /** 用户的实际场景：主机窗口被门户占了（花生壳域名），门户上有指向 dsh 的图标。 */
+  const portal = 'https://nas.oray.com'
+  const dshHost = 'https://dsh.example.com:8443'
+  const known = [dshHost]
+  const decide = (url: string, currentOrigin = portal, knownHostOrigins = known) =>
+    windowOpenDecision({ url, currentOrigin, knownHostOrigins })
+
+  it('第 3 条：指向**已配置主机**的链接 → 在当前窗口导航（跨域也要留在应用内）', () => {
+    // 这是用户需求 1 的关键：门户与 dsh 不同源，靠同源判定会漏掉它。
+    expect(decide(`${dshHost}/session/1`)).toBe('navigate-self')
+    expect(decide(`${dshHost}/`)).toBe('navigate-self')
   })
 
-  it('协议大小写不敏感', () => {
-    expect(windowOpenDecision('HTTPS://EXAMPLE.COM/')).toBe('in-app')
-    expect(windowOpenDecision('Http://example.com/')).toBe('in-app')
+  it('第 4 条：当前站点内的链接 → 在当前窗口导航', () => {
+    expect(decide(`${portal}/desktop`)).toBe('navigate-self')
+    expect(decide(`${portal}/app.php?id=7`)).toBe('navigate-self')
   })
 
-  it('带用户名密码/端口/查询/锚点的 http(s) 仍算应用内', () => {
-    expect(windowOpenDecision('https://user:pw@host:8443/a/b?c=d#e')).toBe('in-app')
+  it('第 5 条：真外链 → 交给系统浏览器（用户需求 2）', () => {
+    expect(decide('https://github.com/steven-stack-s/dsh-remote-client/actions'))
+      .toBe('external')
+    expect(decide('https://www.google.com/')).toBe('external')
   })
 
-  it('mailto: / tel: → 交给系统（邮件、电话应用）', () => {
-    expect(windowOpenDecision('mailto:someone@example.com')).toBe('external')
-    expect(windowOpenDecision('tel:+8613800138000')).toBe('external')
-  })
-
-  it('自定义 scheme → 交给系统（塞进应用内只会是空白页）', () => {
-    expect(windowOpenDecision('dsh://open?session=1')).toBe('external')
-    expect(windowOpenDecision('obsidian://open?vault=v')).toBe('external')
-    expect(windowOpenDecision('vscode://file/tmp/a')).toBe('external')
-  })
-
-  it('file: → 交给系统一侧（安全边界：不得让远端页面在应用内打开本地文件）', () => {
-    expect(windowOpenDecision('file:///etc/passwd')).toBe('external')
-    expect(windowOpenDecision('file://C:/Windows/win.ini')).toBe('external')
-  })
-
-  it('javascript: / data: / about: → 交给系统一侧（安全边界）', () => {
-    expect(windowOpenDecision('javascript:alert(1)')).toBe('external')
-    expect(windowOpenDecision('data:text/html,<script>alert(1)</script>')).toBe('external')
-    expect(windowOpenDecision('about:blank')).toBe('external')
-  })
-
-  it('非法 URL 不抛错，一律归入 external', () => {
-    for (const url of ['', '   ', 'not a url', 'http://', '///', 'example.com']) {
-      expect(windowOpenDecision(url), `应当判定为 external：${JSON.stringify(url)}`)
-        .toBe('external')
+  it('第 1 条：非 http(s) 协议 → 交给系统（含安全边界）', () => {
+    for (const url of [
+      'mailto:someone@example.com',
+      'tel:+8613800138000',
+      'dsh://open?session=1',
+      'obsidian://open?vault=v',
+      // 安全边界：远端页面不该借我们的手在应用内打开本地文件或执行脚本。
+      'file:///etc/passwd',
+      'file://C:/Windows/win.ini',
+      'javascript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'about:blank',
+    ]) {
+      expect(decide(url), `应当是 external：${JSON.stringify(url)}`).toBe('external')
     }
+  })
+
+  it('第 2 条：非法 URL 不抛错，一律 external', () => {
+    for (const url of ['', '   ', 'not a url', 'http://', '///', 'example.com']) {
+      expect(decide(url), `应当是 external：${JSON.stringify(url)}`).toBe('external')
+    }
+  })
+
+  it('origin 比较先规范化：大小写不同不算不同主机', () => {
+    // 不规范化的话，用户按配置里的写法（或门户里的写法）点开就会被误判成外链。
+    expect(decide('https://DSH.Example.COM:8443/x')).toBe('navigate-self')
+    expect(decide('HTTPS://Dsh.Example.com:8443/x')).toBe('navigate-self')
+  })
+
+  it('origin 比较先规范化：默认端口显式与隐式等价', () => {
+    expect(decide('https://dsh.example.com:443/x', `${dshHost}/`, ['https://dsh.example.com']))
+      .toBe('navigate-self')
+    expect(decide('http://nas.local:80/x', 'http://nas.local', ['http://nas.local:80']))
+      .toBe('navigate-self')
+  })
+
+  it('origin 比较先规范化：末尾斜杠/路径/查询不影响判定', () => {
+    expect(decide('https://dsh.example.com:8443', `${portal}/`)).toBe('navigate-self')
+    expect(decide('https://dsh.example.com:8443/?a=1#b')).toBe('navigate-self')
+  })
+
+  it('已知主机列表里的写法不被信任：列表项同样过一遍规范化', () => {
+    // 配置理论上已经是规范化的，但比较两侧用同一套规则才不会有暗坑。
+    expect(decide('https://dsh.example.com:8443/x', portal, ['HTTPS://DSH.example.com:8443/']))
+      .toBe('navigate-self')
+  })
+
+  it('端口不同就是不同主机（不能只比域名）', () => {
+    expect(decide('https://dsh.example.com:9999/x')).toBe('external')
+  })
+
+  it('协议不同就是不同主机（http 与 https 不是同一处）', () => {
+    expect(decide('http://dsh.example.com:8443/x')).toBe('external')
+  })
+
+  it('currentOrigin 为空串（取不到当前页，例如壳自有的 file:// 离线页）→ 第 4 条不参与', () => {
+    // 不能因为「取不到当前页」就把所有链接当成站内链接。
+    expect(decide(`${portal}/desktop`, '')).toBe('external')
+    // 但已知主机仍然照常判定。
+    expect(decide(`${dshHost}/x`, '')).toBe('navigate-self')
+  })
+
+  it('knownHostOrigins 为空数组 → 只有当前站点算内部链接', () => {
+    expect(decide(`${dshHost}/x`, portal, [])).toBe('external')
+    expect(decide(`${portal}/x`, portal, [])).toBe('navigate-self')
+  })
+
+  it('大小写不敏感：协议与主机名', () => {
+    expect(decide('HTTPS://GITHUB.COM/x')).toBe('external')          // 外链，但确实被解析了
+    expect(decide('HTTPS://NAS.ORAY.COM/desktop')).toBe('navigate-self')
+  })
+})
+
+describe('isSameAddress（task-18：deny 之后避免对同一地址重复导航）', () => {
+  it('完全相同 → true', () => {
+    expect(isSameAddress('https://a.com/x', 'https://a.com/x')).toBe(true)
+  })
+
+  it('规范化后相同 → true（大小写、默认端口、末尾斜杠）', () => {
+    expect(isSameAddress('https://A.com/x', 'https://a.com/x')).toBe(true)
+    expect(isSameAddress('https://a.com:443/x', 'https://a.com/x')).toBe(true)
+    expect(isSameAddress('https://a.com', 'https://a.com/')).toBe(true)
+  })
+
+  it('不同地址 → false', () => {
+    expect(isSameAddress('https://a.com/x', 'https://a.com/y')).toBe(false)
+    expect(isSameAddress('https://a.com/', 'https://b.com/')).toBe(false)
+    expect(isSameAddress('https://a.com/', 'http://a.com/')).toBe(false)
+  })
+
+  it('解析不了的字符串退回字面比较（不抛错）', () => {
+    expect(isSameAddress('', '')).toBe(true)
+    expect(isSameAddress('', 'https://a.com')).toBe(false)
+    expect(isSameAddress('not a url', 'not a url')).toBe(true)
   })
 })
 

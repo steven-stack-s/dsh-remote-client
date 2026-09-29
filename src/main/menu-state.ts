@@ -15,6 +15,9 @@
  */
 
 import { partitionNameFor } from './partitions.js'
+// 规范化 origin 的唯一实现（shared 层，无 electron 依赖），用于「已配置主机 /
+// 当前站点」的比较——两边必须用同一套规范化，否则大小写与默认端口会误判。
+import { normalizeOrigin } from '../shared/origin.js'
 
 // ─────────────────────────── 一、菜单栏 ───────────────────────────
 
@@ -430,8 +433,8 @@ export function shouldRemoveWindowMenuBar(platform: string): boolean {
   return platform !== 'darwin'
 }
 
-/** 页面发起打开新窗口时，该在应用内打开还是交给系统。 */
-export type WindowOpenDecision = 'in-app' | 'external'
+/** 页面发起打开新窗口时，该怎么处理。 */
+export type WindowOpenDecision = 'navigate-self' | 'external'
 
 /**
  * 安全地解析 URL。
@@ -451,30 +454,103 @@ function safeUrl(url: string): URL | undefined {
 }
 
 /**
- * 页面自己发起的 `window.open()` / `<a target="_blank">` 该去哪里打开。
+ * 把 URL 或 origin 字符串规范化成**可比较**的 origin；不可用时 undefined。
  *
- * **只有在应用内打开 http/https 才是对的**：这些是用户希望留在客户端里的页面
- * （例如 NAS 门户桌面上的 dsh 图标）。一律丢给系统浏览器会让「在客户端里用 dsh」
- * 这件事在点第一个链接时就断掉。
+ * 复用 `shared/origin.ts` 的 `normalizeOrigin()`（它内部就是 WHATWG `URL`：
+ * 小写化主机名、补全/剥离默认端口、丢弃路径与查询），使两边的比较基准完全一致。
+ * `knownHostOrigins` 本来就是规范化过的，而 URL 里的 origin 没有——不统一的话
+ * `https://GitHub.com` 与 `https://github.com` 会被判成两个不同的地方；用户点
+ * 门户上的 dsh 图标时，只要地址的大小写/默认端口写法与配置里不一致，就会被
+ * 错判成外链而丢给系统浏览器。
  *
- * 其余协议一律交给系统：`mailto:` / `tel:` 本来就该由邮件或电话应用处理，
- * 而自定义 scheme（`dsh:`、`obsidian:` 等）塞进应用内只会得到一个空白页。
+ * 规范化失败（非 http(s)、内嵌凭据、无法解析）时返回 undefined：拿不到可靠身份
+ * 就**不认为它匹配**任何已知主机，宁可交给系统浏览器，也不要在应用内导航到一个
+ * 我们没看懂的目标。
  *
- * **`file:` 与 `javascript:` 必须落在 external 一侧**——它们是安全边界：
- * 远端页面若能让我们在应用内开一个 `file://` 窗口，等于获得读取本地文件的能力
- * （该窗口虽然仍是沙箱化的，但没有理由把这条路打开）。
- *
- * 非法 URL（空串、`not a url`）也归入 external：既开不了窗口，交给系统的调用
- * 也会失败，调用方会吞掉该错误，最终效果等同于「什么都不做」。
- *
- * @param url - 目标 URL（Electron 传入的一般是绝对 URL）。
- * @returns `'in-app'` 表示在应用内开窗，`'external'` 表示拒绝并交给系统。
+ * @param value - URL 或 origin。
+ * @returns 规范化后的 origin；不可用时 undefined。
  */
-export function windowOpenDecision(url: string): WindowOpenDecision {
-  const parsed = safeUrl(url)
-  // 协议大小写不敏感：`new URL()` 已把 protocol 规范化为小写。
+function comparableOrigin(value: string): string | undefined {
+  try {
+    return normalizeOrigin(value)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 页面自己发起的 `window.open()` / `<a target="_blank">` 该怎么处理。
+ *
+ * 判据不是「同源」——门户 → dsh 天然是**跨域**的（门户在花生壳域名下，dsh 在
+ * 自己的地址上），用同源判定会把用户想留在客户端里的那个链接判成外链。
+ * 正确判据是「**这个地址是不是我们认识的**」：已配置的主机，或当前正待着的站点。
+ *
+ * 判定顺序（先排除不可能的情况，再依次放行）：
+ * 1. 非法 URL → `external`（不抛错；交给系统也只会失败，调用方会吞掉）；
+ * 2. 非 `http:`/`https:`（`mailto:`、`tel:`、自定义 scheme、`file:`、`javascript:`）
+ *    → `external`。**`file:`/`javascript:` 属于安全边界**：远端页面不该借我们的手
+ *    在应用内打开本地文件或执行脚本；
+ * 3. 目标 origin ∈ `knownHostOrigins` → **`navigate-self`**：这就是用户在门户里点
+ *    dsh 图标的情形，要在**当前窗口**里打开（替换原窗口，而不是再开一个）；
+ * 4. 目标 origin === `currentOrigin` → **`navigate-self`**：站点内部跳转，跑到系统
+ *    浏览器去会让「在客户端里用 dsh」在点第二个链接时断掉；
+ * 5. 其余 → `external`：真正的外链（GitHub 等）交给默认浏览器。
+ *
+ * `currentOrigin` 传空串表示**取不到当前页面 origin**（还没提交任何导航、或者当前
+ * 是壳自有的 `file://` 页面如离线页）。此时第 4 条不参与判定——不能因为「取不到」
+ * 就把所有链接都当成站内链接。
+ *
+ * @param input - 判定输入。
+ * @returns `'navigate-self'` 表示在当前窗口导航，`'external'` 表示交给系统浏览器。
+ */
+export function windowOpenDecision(input: {
+  /** 页面请求打开的地址。 */
+  url: string
+  /** 当前页面所在 origin；取不到时传空串。 */
+  currentOrigin: string
+  /** 已配置主机的 origin 列表（由主进程注入，见 `createHostWindow`）。 */
+  knownHostOrigins: readonly string[]
+}): WindowOpenDecision {
+  const parsed = safeUrl(input.url)
   if (parsed === undefined) return 'external'
-  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? 'in-app' : 'external'
+  // 协议大小写不敏感：`new URL()` 已把 protocol 规范化为小写。
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'external'
+
+  const target = comparableOrigin(parsed.origin)
+  if (target === undefined) return 'external'
+
+  for (const origin of input.knownHostOrigins) {
+    if (comparableOrigin(origin) === target) return 'navigate-self'
+  }
+
+  if (input.currentOrigin !== '' && comparableOrigin(input.currentOrigin) === target) {
+    return 'navigate-self'
+  }
+
+  return 'external'
+}
+
+/**
+ * 两个地址是否指向同一处（规范化后比较）。
+ *
+ * 用途：`deny` 之后我们自己导航之前，先判断「是不是已经在目标地址上了」——
+ * 页面把当前地址当作新窗口打开（`window.open(location.href)` 之类）时，
+ * 重载一次毫无意义，而 dsh 是 SPA，重载会丢掉当前会话的界面状态。
+ *
+ * 字符串直接相等是最常见的情况；不等时再按 `URL` 规范化后的 `href` 比一次，
+ * 以吃掉大小写、默认端口、`https://a.com` 与 `https://a.com/` 这类写法差异。
+ * 都解析不了就退回字符串比较。
+ *
+ * @param a - 地址一。
+ * @param b - 地址二。
+ * @returns 指向同一处时返回 true。
+ */
+export function isSameAddress(a: string, b: string): boolean {
+  if (a === b) return true
+  const left = safeUrl(a)
+  const right = safeUrl(b)
+  if (left === undefined || right === undefined) return false
+  return left.href === right.href
 }
 
 /** 一次导航结束后该对它做什么。 */
@@ -535,17 +611,18 @@ export interface ContentWindowWebPreferences {
 }
 
 /**
- * 承载远端 dsh 页面的窗口所用的 webPreferences（主机窗口与它打开的子窗口共用）。
+ * 承载远端 dsh 页面的窗口所用的 webPreferences。
  *
- * **存在这个函数的唯一理由**：让「子窗口必须继承父窗口的 `partition`」这件事
- * 无法被忘记。父子两处若各写一份配置，只要有一处漏了 `partition`，新窗口就会
- * 落到另一个 session 里——cookie 全空、用户看到未登录的 dsh，而且这种缺陷在
- * 单测与类型检查里都看不见（它只在真机上表现为「点链接后要重新登录」）。
- * 由同一个函数产出，两者就不可能漂移；`partition` 只从 origin 派生一处逻辑。
+ * **存在这个函数的理由**：把「一个承载远端页面的窗口该有什么配置」收敛到一处，
+ * 使得 `partition` 只能从 origin 派生一次、沙箱开关无法被逐个窗口放宽。
+ * task-18 起 `window.open` 一律 `deny`（内部链接改为在**当前窗口**导航），
+ * 因此目前只有主机窗口在用；而「替换当前窗口」这条策略恰恰意味着**同一个窗口
+ * 会承载不同 origin 的页面**，配置来自创建它的那台主机——若要恢复「新窗口打开」，
+ * 子窗口也必须由本函数产出，才不会重演「新窗口丢登录态」的缺陷。
  *
  * 三项沙箱开关也在这里固定：远端页面是不可信内容，`sandbox: true` +
  * `contextIsolation: true` + `nodeIntegration: false` 是本项目安全模型的基础，
- * 不允许因为「新窗口要能用某个功能」而被放宽。
+ * 不允许因为「窗口要能用某个功能」而被放宽。
  *
  * @param input - origin（决定 partition）与 preload 路径。
  * @returns 可直接交给 `webPreferences` 的对象。
