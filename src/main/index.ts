@@ -419,7 +419,11 @@ async function boot(): Promise<void> {
 // 早期版本的 shell:title IPC 与它互相覆盖，且由 MutationObserver 高频触发，
 // 已删除，这里不再注册对应 handler。
 
-ipcMain.on('shell:network', (_event, online: unknown) => {
+ipcMain.on('shell:network', (event, online: unknown) => {
+  // 只接受**主机窗口**的上报：自 task-15 起，页面自己打开的窗口也带同一个
+  // preload（为了让它们共享登录态与离线检测），不校验 sender 的话，子窗口的
+  // 网络事件会去驱动主机窗口重载——张冠李戴。
+  if (event.sender.id !== hostWebContentsId()) return
   // 网络恢复时立刻重试一次，不必等退避耗尽；离线事件交给 did-fail-load 处理。
   if (online === true) currentWindow?.retryNow()
 })

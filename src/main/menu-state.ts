@@ -14,6 +14,8 @@
  * 这类窗口判定早已在这里，新增判定沿用同一落点，避免为此另开一个模块。
  */
 
+import { partitionNameFor } from './partitions.js'
+
 // ─────────────────────────── 一、菜单栏 ───────────────────────────
 
 /**
@@ -370,4 +372,97 @@ export function shouldQuitOnAllWindowsClosed(input: {
   if (input.quitting) return false
   if (input.trayAvailable) return false
   return input.platform !== 'darwin'
+}
+
+/** 页面发起打开新窗口时，该在应用内打开还是交给系统。 */
+export type WindowOpenDecision = 'in-app' | 'external'
+
+/**
+ * 安全地解析 URL。
+ *
+ * `new URL()` 对非法输入会抛错，而这里需要的是「解析不出来就当作不可用」，
+ * 不是让异常冒到 Electron 的事件回调里。
+ *
+ * @param url - 待解析的字符串。
+ * @returns 解析结果；非法时 undefined。
+ */
+function safeUrl(url: string): URL | undefined {
+  try {
+    return new URL(url)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 页面自己发起的 `window.open()` / `<a target="_blank">` 该去哪里打开。
+ *
+ * **只有在应用内打开 http/https 才是对的**：这些是用户希望留在客户端里的页面
+ * （例如 NAS 门户桌面上的 dsh 图标）。一律丢给系统浏览器会让「在客户端里用 dsh」
+ * 这件事在点第一个链接时就断掉。
+ *
+ * 其余协议一律交给系统：`mailto:` / `tel:` 本来就该由邮件或电话应用处理，
+ * 而自定义 scheme（`dsh:`、`obsidian:` 等）塞进应用内只会得到一个空白页。
+ *
+ * **`file:` 与 `javascript:` 必须落在 external 一侧**——它们是安全边界：
+ * 远端页面若能让我们在应用内开一个 `file://` 窗口，等于获得读取本地文件的能力
+ * （该窗口虽然仍是沙箱化的，但没有理由把这条路打开）。
+ *
+ * 非法 URL（空串、`not a url`）也归入 external：既开不了窗口，交给系统的调用
+ * 也会失败，调用方会吞掉该错误，最终效果等同于「什么都不做」。
+ *
+ * @param url - 目标 URL（Electron 传入的一般是绝对 URL）。
+ * @returns `'in-app'` 表示在应用内开窗，`'external'` 表示拒绝并交给系统。
+ */
+export function windowOpenDecision(url: string): WindowOpenDecision {
+  const parsed = safeUrl(url)
+  // 协议大小写不敏感：`new URL()` 已把 protocol 规范化为小写。
+  if (parsed === undefined) return 'external'
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? 'in-app' : 'external'
+}
+
+/** 一个承载远端页面的窗口应有的 webPreferences。 */
+export interface ContentWindowWebPreferences {
+  /** 隔离渲染进程与 preload 的上下文。 */
+  contextIsolation: boolean
+  /** 页面**不得**拿到 Node（远端页面是不可信内容）。 */
+  nodeIntegration: boolean
+  /** 渲染进程运行在沙箱中。 */
+  sandbox: boolean
+  /** Electron partition 名，决定 cookie/登录态归属。 */
+  partition: string
+  /** preload 脚本绝对路径。 */
+  preload: string
+}
+
+/**
+ * 承载远端 dsh 页面的窗口所用的 webPreferences（主机窗口与它打开的子窗口共用）。
+ *
+ * **存在这个函数的唯一理由**：让「子窗口必须继承父窗口的 `partition`」这件事
+ * 无法被忘记。父子两处若各写一份配置，只要有一处漏了 `partition`，新窗口就会
+ * 落到另一个 session 里——cookie 全空、用户看到未登录的 dsh，而且这种缺陷在
+ * 单测与类型检查里都看不见（它只在真机上表现为「点链接后要重新登录」）。
+ * 由同一个函数产出，两者就不可能漂移；`partition` 只从 origin 派生一处逻辑。
+ *
+ * 三项沙箱开关也在这里固定：远端页面是不可信内容，`sandbox: true` +
+ * `contextIsolation: true` + `nodeIntegration: false` 是本项目安全模型的基础，
+ * 不允许因为「新窗口要能用某个功能」而被放宽。
+ *
+ * @param input - origin（决定 partition）与 preload 路径。
+ * @returns 可直接交给 `webPreferences` 的对象。
+ */
+export function contentWindowWebPreferences(input: {
+  /** 主机 origin。 */
+  origin: string
+  /** preload 脚本绝对路径。 */
+  preload: string
+}): ContentWindowWebPreferences {
+  return {
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    // 由 origin 派生：同一个主机（含它打开的子窗口）必然拿到同一个 partition。
+    partition: partitionNameFor(input.origin),
+    preload: input.preload,
+  }
 }

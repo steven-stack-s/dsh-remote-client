@@ -1,10 +1,15 @@
-import { BrowserWindow, shell } from 'electron'
+import { BrowserWindow, shell, type WebContents } from 'electron'
 import { join } from 'node:path'
-import { partitionNameFor } from './partitions.js'
 import { backoffDelay } from './backoff.js'
 import { shouldHideOnClose } from './lifecycle.js'
 import { reloadTargetFor } from './reload.js'
-import { matchesDevToolsChord, matchesReloadChord, type KeyChord } from './menu-state.js'
+import {
+  contentWindowWebPreferences,
+  matchesDevToolsChord,
+  matchesReloadChord,
+  windowOpenDecision,
+  type KeyChord,
+} from './menu-state.js'
 import { tokenHandshakeUrl } from '../shared/host-input.js'
 import type { HostEntry } from '../shared/types.js'
 
@@ -25,6 +30,118 @@ const BASE_WEB_PREFERENCES = {
   nodeIntegration: false,
   sandbox: true,
 } as const
+
+/** 主机 preload 的绝对路径（主机窗口与它打开的子窗口共用同一个）。 */
+const HOST_PRELOAD = join(here, '../preload/host.cjs')
+
+/**
+ * 给某个 webContents 挂上窗口快捷键：`Ctrl/Cmd+R` 重新加载、
+ * `Ctrl+Shift+I`（macOS `Cmd+Option+I`）/ `F12` 开关 DevTools。
+ *
+ * 主机窗口与「页面自己打开的内容窗口」共用这一份实现：两处行为必须一致，
+ * 否则子窗口里按 F12 没反应会显得像 bug。快捷键的匹配逻辑在 `menu-state.ts`
+ * 的纯函数里（那里没有 electron 依赖，可被单测覆盖），这里只负责把 Electron
+ * 的 `input` 翻译成 `KeyChord` 并执行。
+ *
+ * @param contents - 目标 webContents。
+ * @param onReload - 命中「重新加载」时执行的动作。
+ */
+function installWindowShortcuts(contents: WebContents, onReload: () => void): void {
+  contents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    // 按住不放会连续触发；这两个操作都是重操作，忽略重复事件。
+    if (input.isAutoRepeat) return
+
+    const chord: KeyChord = {
+      key: input.key,
+      control: input.control,
+      meta: input.meta,
+      alt: input.alt,
+      shift: input.shift,
+      platform: process.platform,
+    }
+
+    if (matchesDevToolsChord(chord)) {
+      event.preventDefault()
+      // 用 toggle 而非 open：再按一次要能关掉（Chrome 的习惯行为）。
+      contents.toggleDevTools()
+      return
+    }
+
+    if (matchesReloadChord(chord)) {
+      event.preventDefault()
+      onReload()
+    }
+  })
+}
+
+/**
+ * 给「页面自己打开的内容窗口」补上与主机窗口一致的基础能力。
+ *
+ * 这类窗口由 Electron 依据 `setWindowOpenHandler` 的 `allow` 代为创建
+ * （见本文件里的 `overrideBrowserWindowOptions`），父窗口的事件**不会自动继承**，
+ * 只能在这里补挂。
+ *
+ * 与主机窗口有两点**刻意的不同**：
+ * - **不挂 `close` 拦截**：它是内容窗口，关掉就该关掉，不驻留托盘（那套
+ *   「关窗后仍能被唤起」的语义只属于主机窗口）；
+ * - **不进 `currentWindow` / `currentHostId`**：那套「同一时刻只有一台主机窗口」
+ *   的模型只属于主机窗口，把子窗口塞进去会让重试、离线页、菜单项全部指错对象。
+ *
+ * 子窗口里再开窗口（孙窗口）同样会被接管：不这样，第二层弹窗又会丢掉登录态。
+ *
+ * @param child - 新建的内容窗口。
+ * @param host - 它所属的主机（标题前缀与 partition 的来源）。
+ */
+function installContentWindowBehavior(child: BrowserWindow, host: HostEntry): void {
+  // 标题沿用主机窗口的约定，任务栏里能看出这个窗口属于哪台主机。
+  child.on('page-title-updated', (_event, title) => {
+    if (title !== '') child.setTitle(`${host.label} — ${title}`)
+  })
+
+  // 子窗口的「重新加载」是**普通重载**，而不是主机窗口的「重新请求 host.origin」：
+  // 子窗口里显示的往往已是别的站点（门户、文档），把它换回 dsh 不是用户要的。
+  installWindowShortcuts(child.webContents, () => {
+    if (!child.isDestroyed()) child.webContents.reload()
+  })
+
+  // 递归接管：孙窗口同样共享 partition 与 preload。
+  child.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, host))
+  child.webContents.on('did-create-window', grandchild => {
+    installContentWindowBehavior(grandchild, host)
+  })
+}
+
+/**
+ * `setWindowOpenHandler` 的返回值：http/https 在应用内开（并继承登录态），
+ * 其余协议交给系统。
+ *
+ * 抽成函数是因为主机窗口与各级子窗口都要用同一套规则——两边漂移会让
+ * 「第二层弹窗被扔到系统浏览器」这类问题重新出现。
+ *
+ * @param url - 目标 URL。
+ * @param host - 所属主机（决定继承哪个 partition）。
+ * @returns Electron 的窗口打开决策。
+ */
+function windowOpenHandlerResult(
+  url: string,
+  host: HostEntry,
+): { action: 'deny' } | { action: 'allow', overrideBrowserWindowOptions: Electron.BrowserWindowConstructorOptions } {
+  if (windowOpenDecision(url) === 'external') {
+    // mailto:/tel:/自定义 scheme 交给系统；`file:`/`javascript:` 也走这里，
+    // 它们是安全边界，不该在应用内开窗（见 menu-state.ts 的 windowOpenDecision）。
+    void shell.openExternal(url).catch(() => undefined)
+    return { action: 'deny' }
+  }
+  return {
+    action: 'allow',
+    overrideBrowserWindowOptions: {
+      // 与主机窗口**同一个函数**产出：partition 必然一致（这是本任务的核心），
+      // 三项沙箱开关也一致。见 menu-state.ts 的 contentWindowWebPreferences。
+      webPreferences: contentWindowWebPreferences({ origin: host.origin, preload: HOST_PRELOAD }),
+    },
+  }
+}
 
 /** 主机窗口句柄，供主进程控制重试与状态查询。 */
 export interface HostWindowHandle {
@@ -70,11 +187,9 @@ export function createHostWindow(
     width: 1280,
     height: 860,
     title: host.label,
-    webPreferences: {
-      ...BASE_WEB_PREFERENCES,
-      partition: partitionNameFor(host.origin),
-      preload: join(here, '../preload/host.cjs'),
-    },
+    // 与子窗口**同一个函数**产出（见 menu-state.ts 的 contentWindowWebPreferences），
+    // 保证两者 partition 与沙箱开关永远一致。
+    webPreferences: contentWindowWebPreferences({ origin: host.origin, preload: HOST_PRELOAD }),
   })
 
   win.on('page-title-updated', (_event, title) => { onTitle(title) })
@@ -88,10 +203,22 @@ export function createHostWindow(
     win.hide()
   })
 
-  // 外部链接交给系统浏览器，绝不在壳内开新窗口。
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
-    return { action: 'deny' }
+  // 页面自己发起的 `window.open()` / `<a target="_blank">`。
+  //
+  // **必须显式接管**：Electron 不会让新窗口继承本窗口的 `partition`，于是新窗口
+  // 落在另一个 session 里——cookie 全空，用户看到的是一个未登录的 dsh；preload
+  // 也不会带上，离线检测与通知观察器随之全失效。所以这里显式把父窗口的
+  // `partition` 与 `preload` 交给 `overrideBrowserWindowOptions`。
+  //
+  // 历史教训（用户真机反馈「点门户桌面上的 dsh 图标会跳到系统浏览器」）：
+  // 这段代码原本是「一律 deny + openExternal」，注释还写着「外部链接交给系统
+  // 浏览器，绝不在壳内开新窗口」——听起来很稳妥，实际后果是**页面里的每一个
+  // 链接都被扔出应用**，用户根本没法在客户端里点开任何东西。
+  win.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, host))
+
+  // `allow` 出来的窗口由 Electron 创建，构造参数之外的行为只能在这里补挂。
+  win.webContents.on('did-create-window', child => {
+    installContentWindowBehavior(child, host)
   })
 
   let attempt = 0
@@ -237,40 +364,13 @@ export function createHostWindow(
    * 窗口级快捷键：重新加载（Ctrl/Cmd+R）与 DevTools（Ctrl+Shift+I、
    * macOS 的 Cmd+Option+I、以及 F12）。
    *
-   * Electron **默认不提供** DevTools 快捷键——那是 Chrome 的行为，不是 Electron
-   * 的，所以此前用户在客户端里按 Ctrl+Shift+I 毫无反应；而 DevTools 的 Console
-   * 正是运行 `docs/dom-勘察脚本.js`（为通知功能勘察选择器）的唯一入口。
+   * 主机窗口与它打开的内容窗口都挂（后者见 `installContentWindowBehavior`）；
+   * 欢迎页/编辑页是壳自有页面，不需要 DevTools 与「重新请求 host.origin」。
    *
-   * 只挂在主机窗口上，欢迎页/编辑页不受影响。键位匹配刻意放在 `menu-state.ts`
-   * 的纯函数里：大小写、macOS 用 Command 而非 Ctrl、Shift/Alt 的取舍都容易写错，
-   * 而这里只负责把 Electron 的 `input` 翻译成 `KeyChord`。
+   * 这里重载走 `reload()`（重新请求 `host.origin`），而不是普通 `webContents.reload()`
+   * ——原因见上面 `reload` 的说明。
    */
-  win.webContents.on('before-input-event', (event, input) => {
-    if (input.type !== 'keyDown') return
-    // 按住不放会连续触发；这两个操作都是重操作，忽略重复事件。
-    if (input.isAutoRepeat) return
-
-    const chord: KeyChord = {
-      key: input.key,
-      control: input.control,
-      meta: input.meta,
-      alt: input.alt,
-      shift: input.shift,
-      platform: process.platform,
-    }
-
-    if (matchesDevToolsChord(chord)) {
-      event.preventDefault()
-      // 用 toggle 而非 open：再按一次要能关掉（Chrome 的习惯行为）。
-      win.webContents.toggleDevTools()
-      return
-    }
-
-    if (matchesReloadChord(chord)) {
-      event.preventDefault()
-      reload()
-    }
-  })
+  installWindowShortcuts(win.webContents, reload)
 
   win.on('closed', () => {
     disposed = true

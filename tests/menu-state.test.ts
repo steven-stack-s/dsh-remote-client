@@ -5,6 +5,7 @@ import {
   canOpenEditWindow,
   canOpenHost,
   canReloadHost,
+  contentWindowWebPreferences,
   editMenuLayout,
   emptyHostsPlaceholder,
   hostAfterEditEffect,
@@ -14,8 +15,10 @@ import {
   trayIconVariant,
   trayMenuItemKinds,
   trayOpenAction,
+  windowOpenDecision,
   type KeyChord,
 } from '../src/main/menu-state.js'
+import { partitionNameFor } from '../src/main/partitions.js'
 
 describe('canReloadHost', () => {
   it('无当前主机 → false（菜单项应禁用）', () => {
@@ -321,5 +324,86 @@ describe('shouldQuitOnAllWindowsClosed（#3：加固）', () => {
       platform: 'darwin',
       quitting: false,
     })).toBe(false)
+  })
+})
+
+describe('windowOpenDecision（#task-15：新窗口该在应用内开还是交给系统）', () => {
+  it('https / http → 在应用内打开（用户就是要在客户端里用 dsh）', () => {
+    expect(windowOpenDecision('https://example.com/')).toBe('in-app')
+    expect(windowOpenDecision('https://oray.com:8443/portal?x=1#y')).toBe('in-app')
+    expect(windowOpenDecision('http://192.168.1.10:3080/')).toBe('in-app')
+  })
+
+  it('协议大小写不敏感', () => {
+    expect(windowOpenDecision('HTTPS://EXAMPLE.COM/')).toBe('in-app')
+    expect(windowOpenDecision('Http://example.com/')).toBe('in-app')
+  })
+
+  it('带用户名密码/端口/查询/锚点的 http(s) 仍算应用内', () => {
+    expect(windowOpenDecision('https://user:pw@host:8443/a/b?c=d#e')).toBe('in-app')
+  })
+
+  it('mailto: / tel: → 交给系统（邮件、电话应用）', () => {
+    expect(windowOpenDecision('mailto:someone@example.com')).toBe('external')
+    expect(windowOpenDecision('tel:+8613800138000')).toBe('external')
+  })
+
+  it('自定义 scheme → 交给系统（塞进应用内只会是空白页）', () => {
+    expect(windowOpenDecision('dsh://open?session=1')).toBe('external')
+    expect(windowOpenDecision('obsidian://open?vault=v')).toBe('external')
+    expect(windowOpenDecision('vscode://file/tmp/a')).toBe('external')
+  })
+
+  it('file: → 交给系统一侧（安全边界：不得让远端页面在应用内打开本地文件）', () => {
+    expect(windowOpenDecision('file:///etc/passwd')).toBe('external')
+    expect(windowOpenDecision('file://C:/Windows/win.ini')).toBe('external')
+  })
+
+  it('javascript: / data: / about: → 交给系统一侧（安全边界）', () => {
+    expect(windowOpenDecision('javascript:alert(1)')).toBe('external')
+    expect(windowOpenDecision('data:text/html,<script>alert(1)</script>')).toBe('external')
+    expect(windowOpenDecision('about:blank')).toBe('external')
+  })
+
+  it('非法 URL 不抛错，一律归入 external', () => {
+    for (const url of ['', '   ', 'not a url', 'http://', '///', 'example.com']) {
+      expect(windowOpenDecision(url), `应当判定为 external：${JSON.stringify(url)}`)
+        .toBe('external')
+    }
+  })
+})
+
+describe('contentWindowWebPreferences（#task-15：子窗口必须继承父窗口的登录态）', () => {
+  const origin = 'https://nas.example.com:8443'
+  const preload = '/app/out/preload/host.cjs'
+
+  it('partition 由 origin 派生，且与主机窗口用的是同一个值', () => {
+    // 这条断言是本任务的核心契约：父窗口与它打开的子窗口落在同一个 session 里，
+    // 否则新窗口没有登录态（cookie 全空），用户会看到一个未登录的 dsh。
+    expect(contentWindowWebPreferences({ origin, preload }).partition)
+      .toBe(partitionNameFor(origin))
+  })
+
+  it('preload 原样传入（子窗口也要有离线检测与通知观察器）', () => {
+    expect(contentWindowWebPreferences({ origin, preload }).preload).toBe(preload)
+  })
+
+  it('沙箱三项固定：远端页面是不可信内容，不得被放宽', () => {
+    const prefs = contentWindowWebPreferences({ origin, preload })
+    expect(prefs.contextIsolation).toBe(true)
+    expect(prefs.nodeIntegration).toBe(false)
+    expect(prefs.sandbox).toBe(true)
+  })
+
+  it('不同主机得到不同 partition（登录态隔离不被破坏）', () => {
+    const a = contentWindowWebPreferences({ origin: 'https://a.example.com', preload }).partition
+    const b = contentWindowWebPreferences({ origin: 'https://b.example.com', preload }).partition
+    expect(a).not.toBe(b)
+  })
+
+  it('同一 origin 反复调用结果稳定（父子窗口不能各拿到一个 session）', () => {
+    const parent = contentWindowWebPreferences({ origin, preload })
+    const child = contentWindowWebPreferences({ origin, preload })
+    expect(child).toEqual(parent)
   })
 })
