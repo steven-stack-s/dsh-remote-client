@@ -172,10 +172,14 @@ jobs:
             下载后建议核对（PowerShell）：
 
             ```powershell
-            Get-FileHash .\${{ steps.artifact.outputs.name }} -Algorithm SHA256
+            Get-FileHash .\DSH*setup.exe -Algorithm SHA256
             ```
 
             输出应与上面的 SHA256 一致。
+
+            > 这里用通配符而不是完整文件名：GitHub 会把资产名里的空格改写成点
+            > （`DSH Remote Client-…` 在下载页显示为 `DSH.Remote.Client-…`），
+            > 写死任一种形式都会对不上。**文件内容与 SHA256 不受影响。**
 
             > ⚠️ 安装包**未做代码签名**，Windows SmartScreen / 浏览器可能提示
             > 「未知发布者」或「包含风险文件」。这不是文件损坏，而是未签名 + 下载量少
