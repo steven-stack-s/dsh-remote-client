@@ -109,5 +109,4 @@ git tag v0.1.0 && git push origin v0.1.0
 
 **待完成**：原生通知的 DOM 选择器（需真机勘察，见上）。
 
-设计规格见 [`docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md`](docs/superpowers/specs/2026-09-28-dsh-remote-client-design.md)（§14 记录了实现期发现并修复的 8 个真实缺陷），
-实施计划见 [`docs/superpowers/plans/2026-09-28-stage1-core.md`](docs/superpowers/plans/2026-09-28-stage1-core.md)。
+设计规格与实施计划保留在本地 `docs/superpowers/`，**刻意不入库**（见 `.gitignore`）——它们属于内部设计与实现记录，不适合公开。其中设计规格 §14 记录了实现期发现并修复的 8 个真实缺陷。
