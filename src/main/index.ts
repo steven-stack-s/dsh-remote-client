@@ -219,10 +219,14 @@ let quitting = false
  * 打开一台主机。若该主机窗口已存在（可能被隐藏），直接唤起而不重建，
  * 避免同一 origin 并存两份 WebSocket；切换主机时才销毁旧窗口。
  *
- * @param host - 目标主机。
+ * @param host - 目标主机。**必须是当前配置里的那份**（调用方从 `hostsData` 取），
+ *   因为这里会把它交给窗口作为最新配置。
  */
 function openHost(host: HostEntry): void {
   if (currentWindow !== undefined && currentHostId === host.id && !currentWindow.win.isDestroyed()) {
+    // 窗口已存在时也要把最新配置交进去：它可能停在旧 token / 旧显示名上
+    // （窗口持有的是创建时那份快照，见 windows.ts 的 updateHost 说明）。
+    currentWindow.updateHost(host)
     currentWindow.show()
     return
   }
@@ -234,7 +238,10 @@ function openHost(host: HostEntry): void {
     title => {
       // 离线期间标题由重试倒计时接管，不让页面标题覆盖掉状态提示。
       if (title !== '' && currentWindow?.isOffline() === false) {
-        currentWindow?.win.setTitle(`${host.label} — ${title}`)
+        // 读**当前**配置而不是闭包里的快照：主机被重命名后，页面标题一变
+        // 就应该带上新名字（否则窗口标题会一直停在旧显示名）。
+        const label = hostsData.hosts.find(h => h.id === currentHostId)?.label ?? host.label
+        currentWindow?.win.setTitle(`${label} — ${title}`)
       }
     },
     () => { refreshChrome() },
@@ -585,8 +592,12 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
       }
       openHost(edited)
     } else if (effect === 'reload') {
-      // 地址没变 → 让窗口生效。必须重放 token 握手：令牌可能刚被更新，
-      // 而只加载干净 origin 会用旧的（可能已失效的）cookie。
+      // 地址没变 → 让窗口生效。**必须先把最新配置交给窗口**，再重放 token 握手：
+      // 窗口持有的是创建时那份快照，不更新它就会拿旧 token 去握手（必然 401，
+      // 随后被 401 处理器丢到离线页）——这正是真机上「更新 token 后点『重新加载』
+      // 进不去、而『打开』（新建窗口、从配置读）能进」的原因。
+      // updateHost 同时会重新武装 token 回放，见 windows.ts。
+      currentWindow?.updateHost(edited)
       currentWindow?.reloadWithToken()
     }
 

@@ -7,6 +7,7 @@ import {
   contentWindowWebPreferences,
   matchesDevToolsChord,
   matchesReloadChord,
+  navigationOutcome,
   windowOpenDecision,
   type KeyChord,
 } from './menu-state.js'
@@ -91,12 +92,14 @@ function installWindowShortcuts(contents: WebContents, onReload: () => void): vo
  * 子窗口里再开窗口（孙窗口）同样会被接管：不这样，第二层弹窗又会丢掉登录态。
  *
  * @param child - 新建的内容窗口。
- * @param host - 它所属的主机（标题前缀与 partition 的来源）。
+ * @param getHost - **取当前主机配置**的函数（不是值）。用取值函数而非快照，
+ *   是为了让子窗口的标题前缀与孙窗口的 partition 始终跟随主机配置的最新值
+ *   （主机被重命名后仍显示旧名字，与主机窗口持有的快照缺陷是同一类问题）。
  */
-function installContentWindowBehavior(child: BrowserWindow, host: HostEntry): void {
+function installContentWindowBehavior(child: BrowserWindow, getHost: () => HostEntry): void {
   // 标题沿用主机窗口的约定，任务栏里能看出这个窗口属于哪台主机。
   child.on('page-title-updated', (_event, title) => {
-    if (title !== '') child.setTitle(`${host.label} — ${title}`)
+    if (title !== '') child.setTitle(`${getHost().label} — ${title}`)
   })
 
   // 子窗口的「重新加载」是**普通重载**，而不是主机窗口的「重新请求 host.origin」：
@@ -106,9 +109,9 @@ function installContentWindowBehavior(child: BrowserWindow, host: HostEntry): vo
   })
 
   // 递归接管：孙窗口同样共享 partition 与 preload。
-  child.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, host))
+  child.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, getHost()))
   child.webContents.on('did-create-window', grandchild => {
-    installContentWindowBehavior(grandchild, host)
+    installContentWindowBehavior(grandchild, getHost)
   })
 }
 
@@ -161,6 +164,15 @@ export interface HostWindowHandle {
    * 必须重放才能拿到新的 cookie。
    */
   reloadWithToken: () => void
+  /**
+   * 交入该主机**最新**的配置（令牌/显示名/地址可能刚被编辑窗口改过）。
+   *
+   * 必须由主进程在配置变化后调用：窗口内部读的是自己持有的那份配置，
+   * 不更新它就会一直用创建时的快照——用户更新 token 后点「重新加载」仍带着
+   * 旧 token 去握手，必然 401（这正是真机上「更新 token 后重新加载进不去、
+   * 而『打开』能进」的原因）。
+   */
+  updateHost: (next: HostEntry) => void
   /** 显示并聚焦窗口（供托盘「打开」在窗口被隐藏时唤起）。 */
   show: () => void
 }
@@ -171,18 +183,23 @@ export interface HostWindowHandle {
  *
  * 网络失败时进入指数退避重试（规格 §8），期间显示离线页并把倒计时写进标题。
  *
- * @param host - 目标主机。
+ * @param initialHost - 初始主机配置。**只是初始值**：之后可用句柄的
+ *   `updateHost()` 更新（窗口内部持有可变状态，不会停在创建时的快照）。
  * @param onTitle - 页面标题变化回调，供窗口标题与托盘显示当前会话。
  * @param onOfflineChange - 离线状态变化回调，供托盘更新提示。
  * @param isQuitting - 应用是否正在真正退出；退出时放行 close，其余情况隐藏。
  * @returns 窗口句柄，调用方据此控制重试与查询状态。
  */
 export function createHostWindow(
-  host: HostEntry,
+  initialHost: HostEntry,
   onTitle: (title: string) => void,
   onOfflineChange: (offline: boolean) => void = () => undefined,
   isQuitting: () => boolean = () => false,
 ): HostWindowHandle {
+  // 主机配置是**可变状态**，不是闭包里的快照。下面所有 `host.*` 读取的都是
+  // 这个变量，因此 `updateHost()` 之后立即生效。
+  let host = initialHost
+
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -217,8 +234,9 @@ export function createHostWindow(
   win.webContents.setWindowOpenHandler(({ url }) => windowOpenHandlerResult(url, host))
 
   // `allow` 出来的窗口由 Electron 创建，构造参数之外的行为只能在这里补挂。
+  // 传取值函数而不是当前的 host 值：子窗口存活期间主机可能被重命名。
   win.webContents.on('did-create-window', child => {
-    installContentWindowBehavior(child, host)
+    installContentWindowBehavior(child, () => host)
   })
 
   let attempt = 0
@@ -313,25 +331,37 @@ export function createHostWindow(
    * （`writeUnauthorized`），对 Electron 而言这是一次**成功**的导航，
    * 因此 `did-fail-load` 不会触发、页面会停在纯文本错误上。
    *
-   * 这里只在「配置了 token 且尚未重放过」时回放一次带 token 的握手，
-   * 用来覆盖 dsh 重启导致 token 轮换、但用户手动更新前的灰色窗口期。
+   * 「这次导航该做什么」由纯函数 `navigationOutcome()` 判定（在 menu-state.ts，
+   * 有单测）：只在「配置了 token 且**这一份** token 尚未回放过」时补一次带 token
+   * 的握手，用来覆盖 dsh 重启导致 token 轮换、但用户手动更新前的灰色窗口期。
    * 若回放后仍 401，就不再重试，交由离线页提示用户重新添加主机——
    * 无限回放既是无效流量，也会掩盖真正的问题。
+   *
+   * 注意这里读的是**可变的 `host`**（不是创建时的快照）：token 被更新后，
+   * 回放用的必须是新值，否则会拿着旧 token 再撞一次 401。
    */
   let handshakeReplayed = false
   win.webContents.on('did-navigate', (_event, _url, httpResponseCode) => {
-    if (httpResponseCode !== 401) return
-    if (host.launchToken === undefined || handshakeReplayed) {
-      void win.loadFile(OFFLINE_PAGE, {
-        query: {
-          detail: 'dsh 要求认证（401）。若该部署使用 launch token，'
-            + '请到「文件 → 添加主机…」重新粘贴 dsh web 打印的带 token 地址以更新令牌。',
-        },
-      })
+    const token = host.launchToken
+    const outcome = navigationOutcome({
+      statusCode: httpResponseCode,
+      hasLaunchToken: token !== undefined,
+      alreadyReplayed: handshakeReplayed,
+    })
+    if (outcome === 'ignore') return
+
+    if (outcome === 'replay-token' && token !== undefined) {
+      handshakeReplayed = true
+      void win.loadURL(tokenHandshakeUrl(host.origin, token))
       return
     }
-    handshakeReplayed = true
-    void win.loadURL(tokenHandshakeUrl(host.origin, host.launchToken))
+
+    void win.loadFile(OFFLINE_PAGE, {
+      query: {
+        detail: 'dsh 要求认证（401）。若该部署使用 launch token，'
+          + '请到「文件 → 添加主机…」重新粘贴 dsh web 打印的带 token 地址以更新令牌。',
+      },
+    })
   })
 
   const retryNow = (): void => {
@@ -379,8 +409,11 @@ export function createHostWindow(
 
   // 首次加载：若配置了 launch token，必须先访问带 token 的 URL 换取
   // authority 绑定的签名 cookie（未装认证插件的 dsh 部署**只能**这样接入）。
-  // 之后的 reload/重试一律加载干净的 origin——cookie 已在 partition 里，
-  // 重放 token 既无必要、又可能因 token 过期而失败。
+  //
+  // 之后的 reload/重试一律加载**干净的 origin**：cookie 已在 partition 里，带 token
+  // 反而不安全——当 cookie 仍有效而 token 已失效时，dsh 见到 token 参数但校验不过
+  // 会直接 401，**不会回退去看 cookie**。所以正确链路是「干净 origin → 命中 cookie
+  // 就成功；真的 401 时，再由 did-navigate 用**当前**token 回放一次握手」。
   void win.loadURL(
     host.launchToken !== undefined
       ? tokenHandshakeUrl(host.origin, host.launchToken)
@@ -402,6 +435,20 @@ export function createHostWindow(
       stopTimer()
       attempt = 0
       setOffline(false)
+    },
+    /**
+     * 交入最新配置，并**重新武装 token 回放**。
+     *
+     * `handshakeReplayed` 的语义是「**当前这份 token** 已经回放过一次」。它必须
+     * 在这里归零：配置被更新往往正是因为令牌换了（旧的回放早已发生并被置位），
+     * 若不在此时重新武装，窗口将**永远不再回放**——用户更新 token 后点「重新
+     * 加载」仍会 401，然后被 401 处理器直接丢到离线页，症状与缺陷本身一模一样。
+     *
+     * 地址变更不走这里（`shell:edit:save` 在 origin 变化时销毁并重建窗口）。
+     */
+    updateHost: (next: HostEntry): void => {
+      host = next
+      handshakeReplayed = false
     },
     // 窗口可能处于隐藏态（用户关窗后驻留），唤起时必须先 show 再 focus。
     show: () => {

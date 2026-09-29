@@ -421,6 +421,49 @@ export function windowOpenDecision(url: string): WindowOpenDecision {
   return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? 'in-app' : 'external'
 }
 
+/** 一次导航结束后该对它做什么。 */
+export type NavigationOutcome =
+  /** 与认证无关，忽略这次导航。 */
+  | 'ignore'
+  /** 补一次带（当前）token 的握手。 */
+  | 'replay-token'
+  /** 无法回放或已回放过 → 显示离线页说明原因。 */
+  | 'offline'
+
+/**
+ * `did-navigate` 之后该做什么。
+ *
+ * 场景：dsh 鉴权失败时返回 **401 + 一段提示文本**，对 Electron 而言这是一次
+ * **成功**的导航（`did-fail-load` 不触发，页面停在纯文本错误上），只能在这里补救。
+ *
+ * 规则：
+ * - 非 401 → `ignore`（与认证无关）；
+ * - 401 且**没配 token** → `offline`：无从下手，交给离线页提示用户更新令牌；
+ * - 401 且配了 token、**当前这份 token 尚未回放过** → `replay-token`；
+ * - 401 且**已经回放过** → `offline`：无限回放既是无效流量，也会掩盖真正的问题
+ *   （例如令牌本身就是错的）。
+ *
+ * 这条判定值得单测，是因为 `alreadyReplayed` 的生命周期**正是真机缺陷的所在**：
+ * 只有在「令牌被更新」时把它归零（`HostWindowHandle.updateHost()` 做的事），
+ * 用户更新 token 后点「重新加载」才可能重新走上 `replay-token` 分支；否则窗口会
+ * **永远**停在 `offline`，症状与「token 明明更新了却依然进不去」完全一致。
+ *
+ * @param input - 判定输入。
+ * @returns 应对该次导航执行的动作。
+ */
+export function navigationOutcome(input: {
+  /** 本次导航的 HTTP 状态码。 */
+  statusCode: number
+  /** 该主机是否配置了 launch token。 */
+  hasLaunchToken: boolean
+  /** **当前这份** token 是否已经回放过一次。 */
+  alreadyReplayed: boolean
+}): NavigationOutcome {
+  if (input.statusCode !== 401) return 'ignore'
+  if (!input.hasLaunchToken) return 'offline'
+  return input.alreadyReplayed ? 'offline' : 'replay-token'
+}
+
 /** 一个承载远端页面的窗口应有的 webPreferences。 */
 export interface ContentWindowWebPreferences {
   /** 隔离渲染进程与 preload 的上下文。 */

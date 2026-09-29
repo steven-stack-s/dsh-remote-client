@@ -11,6 +11,7 @@ import {
   hostAfterEditEffect,
   matchesDevToolsChord,
   matchesReloadChord,
+  navigationOutcome,
   shouldQuitOnAllWindowsClosed,
   trayIconVariant,
   trayMenuItemKinds,
@@ -405,5 +406,51 @@ describe('contentWindowWebPreferences（#task-15：子窗口必须继承父窗�
     const parent = contentWindowWebPreferences({ origin, preload })
     const child = contentWindowWebPreferences({ origin, preload })
     expect(child).toEqual(parent)
+  })
+})
+
+describe('navigationOutcome（task-16：401 之后是否回放 token）', () => {
+  it('非 401 → ignore（与认证无关）', () => {
+    for (const statusCode of [200, 204, 302, 403, 404, 500]) {
+      for (const hasLaunchToken of [true, false]) {
+        for (const alreadyReplayed of [true, false]) {
+          expect(navigationOutcome({ statusCode, hasLaunchToken, alreadyReplayed }))
+            .toBe('ignore')
+        }
+      }
+    }
+  })
+
+  it('401 且没配 token → offline（无从回放，交给离线页提示更新令牌）', () => {
+    expect(navigationOutcome({ statusCode: 401, hasLaunchToken: false, alreadyReplayed: false }))
+      .toBe('offline')
+    expect(navigationOutcome({ statusCode: 401, hasLaunchToken: false, alreadyReplayed: true }))
+      .toBe('offline')
+  })
+
+  it('401 + 配了 token + 尚未回放 → replay-token', () => {
+    expect(navigationOutcome({ statusCode: 401, hasLaunchToken: true, alreadyReplayed: false }))
+      .toBe('replay-token')
+  })
+
+  it('401 + 已回放过 → offline（禁止无限回放：既是无效流量，也会掩盖真正的问题）', () => {
+    expect(navigationOutcome({ statusCode: 401, hasLaunchToken: true, alreadyReplayed: true }))
+      .toBe('offline')
+  })
+
+  it('回归守卫：令牌更新（回放标志被重新武装）后，同一个 401 重新可回放', () => {
+    // updateHost() 会把 alreadyReplayed 归零，正是为了让这条路径重新可用。
+    // 若有人「优化」掉那个归零，用户就会看到「token 明明更新了却依然进不去」
+    // ——症状与 task-16 的缺陷完全一致。
+    expect(navigationOutcome({
+      statusCode: 401,
+      hasLaunchToken: true,
+      alreadyReplayed: true,   // 旧 token 已经回放过
+    })).toBe('offline')
+    expect(navigationOutcome({
+      statusCode: 401,
+      hasLaunchToken: true,
+      alreadyReplayed: false,  // updateHost() 之后重新武装
+    })).toBe('replay-token')
   })
 })
