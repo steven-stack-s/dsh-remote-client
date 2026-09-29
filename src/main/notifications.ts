@@ -179,20 +179,24 @@ export interface Notifier {
 /**
  * 创建通知器。
  *
- * 去重时间戳记在闭包里，且**只在真的弹出通知时**更新——被聚焦判定或平台
- * 不支持抑制掉的那次不该占用去重窗口，否则「抑制一次」会让紧随其后的
- * 真正该通知的信号也被吃掉。
+ * 去重时间戳**按信号类型分别记录**（审批 / 消息各一份），且**只在真的弹出
+ * 通知时**更新——被聚焦判定或平台不支持抑制掉的那次不该占用去重窗口，
+ * 否则「抑制一次」会让紧随其后的真正该通知的信号也被吃掉。
  *
- * 注意去重是**全局单时间戳**（对应规格 §5.4 的单一 5 秒窗口）：一条消息通知
- * 之后的 5 秒内到达的审批通知也会被抑制。这是有意的取舍——防轰炸优先于
- * 逐条送达；若日后要按信号分别计时，改动点集中在本函数与 `shouldNotify`。
+ * 为什么必须按类型分开：若共用一个时间戳，一条消息通知之后的 5 秒内到达的
+ * **审批通知会被一并抑制**。审批是「必须被用户看到」的信号——agent 正卡在
+ * 那里等回应，漏报的代价是任务停摆。而同一类型内的重复仍应去重以防轰炸。
  *
  * @param port - 原生通知端口。
  * @param now - 取当前时间的函数，默认 `Date.now`（便于测试注入）。
  * @returns 通知器。
  */
 export function createNotifier(port: NotificationPort, now: () => number = Date.now): Notifier {
-  let lastNotifiedAt: number | undefined
+  /** 两类信号各自的「上次真的弹过通知」时刻。 */
+  const lastNotifiedAt: { urgent: number | undefined, message: number | undefined } = {
+    urgent: undefined,
+    message: undefined,
+  }
 
   return {
     notify: (context: NotifyContext): boolean => {
@@ -200,17 +204,19 @@ export function createNotifier(port: NotificationPort, now: () => number = Date.
       // （如缺少通知守护进程的 Linux）构造 Notification 也不会显示。
       if (!port.isSupported()) return false
 
+      // 按类型取各自的时间戳：审批与消息互不抑制。
+      const slot = context.urgent ? 'urgent' : 'message'
       const at = now()
       const allowed = shouldNotify({
         urgent: context.urgent,
         windowFocused: context.windowFocused,
-        lastNotifiedAt,
+        lastNotifiedAt: lastNotifiedAt[slot],
         now: at,
         dedupeMs: NOTIFY_DEDUPE_MS,
       })
       if (!allowed) return false
 
-      lastNotifiedAt = at
+      lastNotifiedAt[slot] = at
       const sessionName = sessionNameFromDocumentTitle(context.titleHint, context.hostLabel)
       const notification = port.create({
         title: context.hostLabel,
@@ -221,6 +227,9 @@ export function createNotifier(port: NotificationPort, now: () => number = Date.
       notification.show()
       return true
     },
-    reset: (): void => { lastNotifiedAt = undefined },
+    reset: (): void => {
+      lastNotifiedAt.urgent = undefined
+      lastNotifiedAt.message = undefined
+    },
   }
 }

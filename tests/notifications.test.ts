@@ -145,15 +145,39 @@ describe('createNotifier', () => {
     expect(created[0]!.body).toContain('审批')
   })
 
-  it('5 秒内第二次上报被抑制，不产生第二条通知', () => {
+  it('同类型的 5 秒内第二次上报被抑制，不产生第二条通知', () => {
     const { port, created } = fakePort()
     let now = 1000
     const notifier = createNotifier(port, () => now)
     expect(notifier.notify(context)).toBe(true)
-    now = 4000  // 相隔 3s
-    expect(notifier.notify({ ...context, urgent: true })).toBe(false)
+    now = 4000  // 相隔 3s，仍是「消息」类型
+    expect(notifier.notify(context)).toBe(false)
     expect(created).toHaveLength(1)
     now = 6000  // 距首次 5s，正好脱离窗口
+    expect(notifier.notify(context)).toBe(true)
+    expect(created).toHaveLength(2)
+  })
+
+  it('消息通知不会抑制紧随其后的审批（两类信号独立计时）', () => {
+    // 这条曾经是反的：早先去重共用一个时间戳，于是"消息通知后 5 秒内
+    // 到达的审批"会被一并吃掉。审批是必须被用户看到的信号——agent 正卡在
+    // 那里等回应，漏报的代价是任务停摆，因此两类必须各自计时。
+    const { port, created } = fakePort()
+    let now = 1000
+    const notifier = createNotifier(port, () => now)
+    expect(notifier.notify(context)).toBe(true)         // 消息通知
+    now = 4000                                           // 仅相隔 3s
+    expect(notifier.notify({ ...context, urgent: true, windowFocused: true })).toBe(true)
+    expect(created).toHaveLength(2)
+    expect(created[1]!.body).toContain('审批')
+  })
+
+  it('审批通知也不会抑制紧随其后的消息（反向同样独立）', () => {
+    const { port, created } = fakePort()
+    let now = 1000
+    const notifier = createNotifier(port, () => now)
+    expect(notifier.notify({ ...context, urgent: true })).toBe(true)
+    now = 4000
     expect(notifier.notify(context)).toBe(true)
     expect(created).toHaveLength(2)
   })
