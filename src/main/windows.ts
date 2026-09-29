@@ -257,7 +257,17 @@ export function createHostWindow(
     webPreferences: contentWindowWebPreferences({ origin: host.origin, preload: HOST_PRELOAD }),
   })
 
-  win.on('page-title-updated', (_event, title) => { onTitle(title) })
+  win.on('page-title-updated', (event, title) => {
+    // **必须 preventDefault**：Electron 会在这个事件之后把原生标题设成文档
+    // 标题，不拦住的话，下面 onTitle 里拼好的「主机名 — 会话名」会被覆盖回
+    // 裸的页面标题（用户真机截图里窗口标题只有 DXP4800-16DE、没有主机名前缀，
+    // 就是这个原因）。子窗口那边同样是这么处理的。
+    //
+    // 这里不需要 `did-finish-load` 兜底：本监听是在 `loadURL` 之前挂上的，
+    // 不存在「事件先于监听触发」的时序问题（子窗口由 Electron 代管，才有）。
+    event.preventDefault()
+    onTitle(title)
+  })
 
   // Windows/Linux 上拦截关窗并改为隐藏，使托盘与其管理入口继续存活——
   // 用户在能力选择里勾的「关窗后仍能被唤起」依赖这一点。应用真正退出时
