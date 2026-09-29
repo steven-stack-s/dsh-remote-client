@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron'
 import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps } from './tray.js'
@@ -10,6 +10,7 @@ import { applyHostEdit } from '../shared/host-edit.js'
 import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
+import { createNotifier, parseNotifyRequest } from './notifications.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 const dataDir = app.getPath('userData')
@@ -36,6 +37,47 @@ let currentWindow: HostWindowHandle | undefined
 let hostsData: HostsFile = { version: 1, hosts: [] }
 let currentHostId: string | undefined
 let tray: Electron.Tray | undefined
+
+/**
+ * Windows 的「应用用户模型 ID」（AppUserModelID）。
+ *
+ * **必须与 `electron-builder.yml` 的 `appId` 完全一致**：Windows 靠它把通知
+ * 归属到某个已安装的应用，对不上时系统会**静默丢弃**通知——不报错、不显示，
+ * 表现为「功能没做」。不一致比不设置更难排查，因此这里显式写下并标注来源。
+ */
+const APP_USER_MODEL_ID = 'com.stevenstack.dshremoteclient'
+
+/**
+ * 原生通知器。
+ *
+ * 判定逻辑（去重、聚焦判定、文案）都在 `notifications.ts` 里，是可单测的纯逻辑；
+ * 这里只负责把 Electron 的 `Notification` 适配成端口——`notifications.ts`
+ * 因此不 import electron，能被 vitest 直接加载（见该文件头部的说明）。
+ */
+const notifier = createNotifier({
+  isSupported: () => Notification.isSupported(),
+  create: options => {
+    const notification = new Notification(options)
+    return {
+      show: () => { notification.show() },
+      onClick: handler => { notification.on('click', handler) },
+    }
+  },
+})
+
+/**
+ * 当前主机窗口的 webContents id；无窗口或窗口已销毁时为 undefined。
+ *
+ * 通知 IPC 用它校验 sender（与 `shell:restart` / `shell:edit:*` 同一模式）。
+ * 这里用「当前主机窗口」而非 id 集合：主机窗口随切换被销毁重建，
+ * 用一个可随时求值的判定比维护集合更不容易漏删。
+ *
+ * @returns 当前主机窗口的 webContents id，无则 undefined。
+ */
+function hostWebContentsId(): number | undefined {
+  if (currentWindow === undefined || currentWindow.win.isDestroyed()) return undefined
+  return currentWindow.win.webContents.id
+}
 
 /**
  * 壳自有欢迎页的 webContents id 集合。
@@ -272,6 +314,16 @@ function installShellChrome(): void {
 }
 
 async function boot(): Promise<void> {
+  // Windows 上必须在 app.whenReady() 之后、发通知之前设置 AppUserModelID，
+  // 否则系统原生通知**根本不显示**（静默失败，不报错也不抛异常）。
+  // boot() 正是在 whenReady 之后被调用，这里是唯一且最早的时机。
+  // 平台不支持时只降级通知能力，绝不能因此影响启动。
+  try {
+    app.setAppUserModelId(APP_USER_MODEL_ID)
+  } catch (error) {
+    console.error('[dsh-remote-client] 设置 AppUserModelID 失败，通知可能不显示：', error)
+  }
+
   // 先装配入口，再做任何可能失败的事（读/写配置、开窗），并整体兜底。
   installShellChrome()
 
@@ -314,6 +366,38 @@ async function boot(): Promise<void> {
 ipcMain.on('shell:network', (_event, online: unknown) => {
   // 网络恢复时立刻重试一次，不必等退避耗尽；离线事件交给 did-fail-load 处理。
   if (online === true) currentWindow?.retryNow()
+})
+
+/**
+ * 通知上报。preload 的 DOM 观察器只在命中选择器时才会发这条 IPC
+ * （见 `src/preload/host.ts`），因此这里不必再防高频。
+ *
+ * 校验 sender 必须是**当前主机窗口**：通知会抢占用户的注意力，绝不能让
+ * 其他上下文（欢迎页/编辑页/已销毁的旧主机窗口）或远端页面注入的脚本
+ * 随意触发。远端页面本就是本项目认定的不可信内容，其上报按外部输入处理
+ * （`parseNotifyRequest` 只接受严格合法的负载）。
+ */
+ipcMain.on('shell:notify', (event, raw: unknown) => {
+  if (event.sender.id !== hostWebContentsId()) return
+  const request = parseNotifyRequest(raw)
+  if (request === undefined) return
+
+  try {
+    notifier.notify({
+      urgent: request.urgent,
+      // 焦点判定只在主进程做（preload 不重复实现）——它才是那个知道窗口
+      // 是否被隐藏/最小化/被别的应用盖住的地方。
+      windowFocused: currentWindow?.win.isFocused() ?? false,
+      hostLabel: hostsData.hosts.find(h => h.id === currentHostId)?.label ?? 'dsh',
+      titleHint: request.title,
+      // 点击通知 → 唤起并聚焦窗口。窗口可能是被收进托盘的隐藏态（隐藏 ≠ 关闭），
+      // `show()` 内部已处理 show + focus。
+      onActivate: () => { currentWindow?.show() },
+    })
+  } catch (error) {
+    // 通知失败绝不能牵连页面本身：它是锦上添花的能力，不是主链路。
+    console.error('[dsh-remote-client] 原生通知失败：', error)
+  }
 })
 
 ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
