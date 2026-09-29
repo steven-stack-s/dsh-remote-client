@@ -105,12 +105,15 @@ jobs:
           ls -la release/
           echo "setup=$(ls release/*.exe | head -1)" >> "$GITHUB_OUTPUT"
 
-      - name: 上传构建产物（手动触发时可在 Actions 页面下载）
+      - name: 上传构建产物（在 Actions 页面该次运行的 Artifacts 区下载）
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
           path: release/*.exe
           if-no-files-found: error
+          # 安装包约 106MB，且 main 每次推送都会产出。设自动过期避免
+          # 无限累积占用仓库的 Artifacts 配额；够取用即可。
+          retention-days: 7
 
       - name: 发布到 GitHub Release（仅 tag 触发时）
         if: startsWith(github.ref, 'refs/tags/')
