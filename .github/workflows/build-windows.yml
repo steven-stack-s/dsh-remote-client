@@ -103,7 +103,32 @@ jobs:
         shell: bash
         run: |
           ls -la release/
-          echo "setup=$(ls release/*.exe | head -1)" >> "$GITHUB_OUTPUT"
+          setup="$(ls release/*.exe | head -1)"
+          echo "setup=$setup" >> "$GITHUB_OUTPUT"
+          # 校验值：安装包未做代码签名，浏览器/系统会给「未知来源」警告，
+          # 下载者无从判断拿到的文件是否完整、是否被替换过。给出 SHA256
+          # 至少让「我下到的就是 CI 产出的那一份」可被自行核对。
+          sha="$(sha256sum "$setup" | cut -d' ' -f1)"
+          size="$(stat -c%s "$setup")"
+          name="$(basename "$setup")"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+          {
+            echo "### 安装包校验值"
+            echo
+            echo '```'
+            echo "文件   $name"
+            echo "大小   $size 字节"
+            echo "SHA256 $sha"
+            echo '```'
+            echo
+            echo "核对（PowerShell）："
+            echo
+            echo '```powershell'
+            echo "Get-FileHash .\\$name -Algorithm SHA256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传构建产物（在 Actions 页面该次运行的 Artifacts 区下载）
         uses: actions/upload-artifact@v4
@@ -136,5 +161,26 @@ jobs:
                或安装 `@xgone/dsh-remote` 认证插件
             3. 关闭窗口 = 最小化到系统托盘（不是退出）；退出请用托盘菜单的「退出」
 
-            > ⚠️ 安装包未做代码签名，Windows SmartScreen 可能提示「未知发布者」。
-            > 点「更多信息」→「仍要运行」即可。介意的话可自行配置签名证书。
+            ### 文件校验
+
+            ```
+            文件   ${{ steps.artifact.outputs.name }}
+            大小   ${{ steps.artifact.outputs.size }} 字节
+            SHA256 ${{ steps.artifact.outputs.sha256 }}
+            ```
+
+            下载后建议核对（PowerShell）：
+
+            ```powershell
+            Get-FileHash .\${{ steps.artifact.outputs.name }} -Algorithm SHA256
+            ```
+
+            输出应与上面的 SHA256 一致。
+
+            > ⚠️ 安装包**未做代码签名**，Windows SmartScreen / 浏览器可能提示
+            > 「未知发布者」或「包含风险文件」。这不是文件损坏，而是未签名 + 下载量少
+            > 触发的信誉警告。Chrome 可在下载项上选「保留」；Edge / 系统提示选
+            > 「更多信息」→「仍要运行」。
+            >
+            > **校验 SHA256 是比这些提示更可靠的判断依据**——它确认你拿到的正是 CI
+            > 产出的那一份。
