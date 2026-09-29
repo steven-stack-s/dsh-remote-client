@@ -84,4 +84,18 @@ describe('构建产物', () => {
     expect(host).not.toMatch(/^\s*import\s.+from\s/mu)
     expect(host).not.toMatch(/^\s*export\s/mu)
   })
+
+  it('通知观察器同时监听节点新增与 data-streaming 属性变化', async () => {
+    requireBuilt()
+    const host = await readFile(join(outDir, 'preload', 'host.cjs'), 'utf8')
+    // 两条通知规则靠**不同的**触发方式：审批 = 节点出现（childList），
+    // 消息 = 属性消失（attributeFilter）。少任何一项都会静默丢掉一半功能
+    // ——「只把观察配置改了一半」的改动在单测里看不见（preload 无法单测），
+    // 却能通过类型检查与构建，所以在这里按产物形态守一道。
+    expect(host).toContain('childList')
+    expect(host).toContain('attributeFilter')
+    expect(host).toContain('observedAttributes')
+    // 属性名由 selectors.ts 提供，最终必须出现在产物里（否则过滤会失效）。
+    expect(host).toContain('data-streaming')
+  })
 })
