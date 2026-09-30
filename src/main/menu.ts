@@ -1,5 +1,6 @@
 import { Menu, app, type MenuItemConstructorOptions } from 'electron'
 import {
+  MENU_ACCELERATORS,
   canEditHost,
   canOpenEditWindow,
   editMenuLayout,
@@ -80,7 +81,7 @@ function toEditMenuItem(kind: EditMenuItemKind, deps: AppMenuDeps): MenuItemCons
     case 'addHost':
       return {
         label: '添加主机…',
-        accelerator: 'CmdOrCtrl+N',
+        accelerator: MENU_ACCELERATORS.addHost,
         click: () => { deps.onAddHost() },
       }
     case 'editHost':
@@ -88,6 +89,7 @@ function toEditMenuItem(kind: EditMenuItemKind, deps: AppMenuDeps): MenuItemCons
       // （「删除主机…」不同，它作用于当前主机，仍要求有当前主机）。
       return {
         label: '编辑主机…',
+        accelerator: MENU_ACCELERATORS.editHost,
         enabled: canOpenEditWindow(deps.getData().hosts.length),
         click: () => { deps.onEditCurrentHost() },
       }
@@ -95,6 +97,7 @@ function toEditMenuItem(kind: EditMenuItemKind, deps: AppMenuDeps): MenuItemCons
       return {
         label: '删除主机…',
         // 第二删除入口：与主机子菜单里的「删除…」共用同一套确认框逻辑。
+        // 刻意不给快捷键，理由见 `MENU_ACCELERATORS` 的说明。
         enabled: canEditHost(currentId),
         click: () => { deps.onRemoveCurrentHost() },
       }
@@ -103,7 +106,7 @@ function toEditMenuItem(kind: EditMenuItemKind, deps: AppMenuDeps): MenuItemCons
     case 'quit':
       return {
         label: '退出',
-        accelerator: 'CmdOrCtrl+Q',
+        accelerator: MENU_ACCELERATORS.quit,
         click: () => { deps.onQuit() },
       }
   }

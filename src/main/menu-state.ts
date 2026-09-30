@@ -145,6 +145,29 @@ export function editMenuLayout(): readonly EditMenuItemKind[] {
 }
 
 /**
+ * 应用菜单栏与托盘共用的快捷键。
+ *
+ * **集中在这里而不是散在 `menu.ts` / `tray.ts`**：两处都要列同一批项，各写一遍
+ * 迟早漂移（托盘提示 Ctrl+E、菜单栏却是别的键）；而且它是纯数据，可以被单测钉住，
+ * 避免日后有人"顺手"改掉一个用户已经形成肌肉记忆的键。
+ *
+ * `editHost` 的 `Ctrl+E` 是补上的：它此前**没有任何快捷键**（不是有意为之，
+ * 只是当初漏了）。补它之前先确认过没有冲突——本项目已占用的是
+ * `Ctrl+N`（添加主机）、`Ctrl+Q`（退出）、`Ctrl+R`（刷新）、
+ * `Ctrl+Shift+I`/`F12`（DevTools）、`Ctrl+W`（内容窗口关闭）。
+ * 选 `E` 是为了与 `Ctrl+N`（New）对称，Edit 同样取首字母。
+ *
+ * **「删除主机…」刻意不设快捷键**：它是不可撤销的破坏性操作（虽然弹确认框，
+ * 但默认按钮是「取消」，多按一次回车就前功尽弃）。给一个容易误触的组合键，
+ * 收益远小于风险——它留在菜单里点，本来就是更合适的手感。
+ */
+export const MENU_ACCELERATORS = {
+  addHost: 'CmdOrCtrl+N',
+  editHost: 'CmdOrCtrl+E',
+  quit: 'CmdOrCtrl+Q',
+} as const
+
+/**
  * 「编辑主机…」菜单项是否可用。
  *
  * 与 {@link canEditHost} 的区别：那个函数还用在「删除主机…」上（作用于当前主机，
@@ -216,7 +239,9 @@ export type TrayMenuItemKind = 'open' | 'hosts' | 'addHost' | 'editHost' | 'quit
 /** 托盘菜单文案。 */
 export const TRAY_MENU_LABELS: Record<TrayMenuItemKind, string> = {
   open: '打开客户端',
-  hosts: '主机',
+  // 「主机列表」而非「主机」：这一项下面挂的是**每台主机一个子菜单**，
+  // 叫「主机」容易被读成「当前主机」这个动作；"列表" 才说明点开是列表。
+  hosts: '主机列表',
   addHost: '添加主机…',
   editHost: '编辑主机…',
   quit: '关闭客户端',

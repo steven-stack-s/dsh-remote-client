@@ -8,6 +8,7 @@ import {
   TRAY_ICON_OFFLINE_32,
 } from './tray-icons.js'
 import {
+  MENU_ACCELERATORS,
   TRAY_MENU_LABELS,
   canOpenEditWindow,
   trayIconVariant,
@@ -125,11 +126,11 @@ function toMenuItem(kind: TrayMenuItemKind, deps: TrayDeps): MenuItemConstructor
     case 'hosts':
       return { label: TRAY_MENU_LABELS.hosts, submenu: hostSubmenu(deps) }
     case 'addHost':
-      // 快捷键与菜单栏的「添加主机…」保持一致（accelerator 由 application menu
-      // 提供，这里写出来是为了让托盘里也能看到提示）。
+      // 快捷键与菜单栏的「添加主机…」保持一致（这里写出来只是让托盘菜单也显示
+      // 提示；真正的全局注册在 application menu 上，见 `MENU_ACCELERATORS`）。
       return {
         label: TRAY_MENU_LABELS.addHost,
-        accelerator: 'CmdOrCtrl+N',
+        accelerator: MENU_ACCELERATORS.addHost,
         click: () => { deps.onAddHost() },
       }
     case 'editHost':
@@ -137,6 +138,7 @@ function toMenuItem(kind: TrayMenuItemKind, deps: TrayDeps): MenuItemConstructor
       // 因此只要还有主机就能打开它（「删除主机…」不同，它作用于当前主机）。
       return {
         label: TRAY_MENU_LABELS.editHost,
+        accelerator: MENU_ACCELERATORS.editHost,
         enabled: canOpenEditWindow(deps.getData().hosts.length),
         click: () => { deps.onEditCurrentHost() },
       }

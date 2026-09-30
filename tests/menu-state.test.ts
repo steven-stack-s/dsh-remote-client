@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  MENU_ACCELERATORS,
   TRAY_MENU_LABELS,
   canEditHost,
   canOpenEditWindow,
@@ -176,7 +177,7 @@ describe('trayMenuLayout（主机管理回到托盘）', () => {
   it('文案正确', () => {
     expect(TRAY_MENU_LABELS.open).toBe('打开客户端')
     expect(TRAY_MENU_LABELS.quit).toBe('关闭客户端')
-    expect(TRAY_MENU_LABELS.hosts).toBe('主机')
+    expect(TRAY_MENU_LABELS.hosts).toBe('主机列表')
     expect(TRAY_MENU_LABELS.addHost).toBe('添加主机…')
     expect(TRAY_MENU_LABELS.editHost).toBe('编辑主机…')
   })
@@ -250,6 +251,41 @@ describe('trayIconVariant（#5：托盘图标随主题与离线状态选色）',
 
   it('正常态：浅色主题用黑鲸鱼', () => {
     expect(trayIconVariant({ offline: false, dark: false })).toBe('light')
+  })
+})
+
+describe('MENU_ACCELERATORS（快捷键契约）', () => {
+  it('键位：添加主机 N、编辑主机 E、退出 Q（New / Edit 首字母对称）', () => {
+    expect(MENU_ACCELERATORS.addHost).toBe('CmdOrCtrl+N')
+    expect(MENU_ACCELERATORS.editHost).toBe('CmdOrCtrl+E')
+    expect(MENU_ACCELERATORS.quit).toBe('CmdOrCtrl+Q')
+  })
+
+  it('「删除主机…」刻意没有快捷键', () => {
+    // 它是不可撤销的破坏性操作（确认框的默认按钮还是「取消」，多按一次回车就
+    // 前功尽弃）。日后若有人顺手给它加键，这条会红——那是需要先讨论的决定。
+    expect('removeHost' in MENU_ACCELERATORS).toBe(false)
+  })
+
+  it('互不重复', () => {
+    const values = Object.values(MENU_ACCELERATORS)
+    expect(new Set(values).size).toBe(values.length)
+  })
+
+  it('一律用 CmdOrCtrl，不写死 Ctrl（macOS 上要变成 Command）', () => {
+    for (const accelerator of Object.values(MENU_ACCELERATORS)) {
+      expect(accelerator).toContain('CmdOrCtrl+')
+    }
+  })
+
+  it('不与窗口级快捷键冲突（R / W / I / F12 已被占用）', () => {
+    // 这几组由 `windows.ts` 的 before-input-event 处理（刷新、关窗、DevTools）。
+    // 菜单 accelerator 与它们撞键时，先命中的那一个会吃掉事件。
+    const taken = new Set(['R', 'W', 'I', 'F12'])
+    for (const accelerator of Object.values(MENU_ACCELERATORS)) {
+      const key = (accelerator.split('+')[1] ?? '').toUpperCase()
+      expect(taken.has(key)).toBe(false)
+    }
   })
 })
 
