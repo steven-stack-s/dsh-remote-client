@@ -33,8 +33,13 @@ the matching GitHub Release notes (CI prints it during the build). It is deliber
 go stale — and a stale hash is worse than none, because it makes people think they
 downloaded the wrong file.
 
-> A local build (`./scripts/build-windows.sh`) produces the same filename but is not
-> published to a Release; compare it against whatever your local build printed.
+> When downloading from the Release page, **GitHub rewrites the spaces in the asset
+> name into dots** (`DSH Remote Client-…` → `DSH.Remote.Client-…`) — **the file
+> contents and the SHA256 are unaffected**.
+>
+> A local build (`./scripts/build-windows.sh`) produces the **space-separated** name
+> under `release/` instead; such packages are not published to a Release, so compare
+> against whatever your local build printed.
 
 Double-click to install (no administrator privileges needed), then jump straight to §1.
 

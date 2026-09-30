@@ -27,8 +27,11 @@ release/DSH Remote Client-0.1.1-setup.exe   （约 106MB，自带 Electron 运�
 刻意不把哈希写死在这里——它是**跟着每个构建变**的，写死就必然会过期，
 而过期的哈希比没有哈希更糟（会让人以为下错了包）。
 
-> 本地构建（`./scripts/build-windows.sh`）产出的是同一个文件名，
-> 这类包不在 Release 里，按你本地构建时 CI/脚本打印的值核对即可。
+> 从 Release 页下载时，资产名里的**空格会被 GitHub 改写成点**
+> （`DSH Remote Client-…` → `DSH.Remote.Client-…`）——**文件内容与 SHA256 不受影响**。
+>
+> 本地构建（`./scripts/build-windows.sh`）产出的是 `release/` 下**带空格**的那个名字，
+> 这类包不在 Release 里，按你本地构建时脚本打印的值核对即可。
 
 双击安装（不需要管理员权限），然后直接跳到 §1。
 
