@@ -204,30 +204,57 @@ export function hostAfterEditEffect(input: {
 
 // ─────────────────────────── 二、托盘 ───────────────────────────
 
-/** 托盘菜单里的项。刻意**只有两项**（用户明确要求）。 */
-export type TrayMenuItemKind = 'open' | 'quit'
+/**
+ * 托盘菜单里的可点击项。
+ *
+ * 这里**曾经只有** `open` / `quit` 两项（task-14 的精简）。`hosts` / `addHost` /
+ * `editHost` 是后加回来的，原因见 `trayMenuLayout()`——不是推翻时判断错了，
+ * 而是那条判断赖以成立的前提消失了。
+ */
+export type TrayMenuItemKind = 'open' | 'hosts' | 'addHost' | 'editHost' | 'quit'
 
 /** 托盘菜单文案。 */
 export const TRAY_MENU_LABELS: Record<TrayMenuItemKind, string> = {
   open: '打开客户端',
+  hosts: '主机',
+  addHost: '添加主机…',
+  editHost: '编辑主机…',
   quit: '关闭客户端',
 }
 
+/** 托盘菜单的一项：可点击项，或一条分隔线。 */
+export type TrayMenuEntry = TrayMenuItemKind | 'separator'
+
 /**
- * 托盘菜单的项集合。
+ * 托盘菜单的布局（顺序 + 分隔线位置）。
  *
- * 用户要求托盘**只保留**「打开客户端 / 关闭客户端」。原先的每主机子菜单
- * （打开/重新加载/立即重试/重置登录态/删除…）全部移除——它们**已经全部在
- * 菜单栏的「主机(H)」里**，因此不是功能丢失。托盘在 Windows 上还可能不显示，
- * 把主机管理放在那里本就是错的：菜单栏才是三平台都可见的兜底入口。
+ * ## 为什么托盘又把主机管理收了回来
  *
- * 做成纯函数是为了守住「只有两项」这条契约：日后有人往托盘里加回主机管理项，
- * 测试会立刻变红。
+ * task-14 把托盘精简成「打开客户端 / 关闭客户端」，理由是主机管理**已经全部在
+ * 菜单栏的「主机(H)」里**，而「菜单栏才是三平台都可见的兜底入口」——托盘在
+ * Windows 上甚至可能根本不显示，把管理入口放那儿本就是错的。**那条判断在当时
+ * 是对的**，本函数注释里保留这段历史，是为了让后来者看到的是「前提变了」，
+ * 而不是「有人把删掉的东西又加回来了」。
  *
- * @returns 按显示顺序排列的项种类。
+ * 前提是怎么没的：Windows 上主机窗口改为无边框窗口，好让顶部那一条由 dsh 自绘、
+ * 从而跟随应用主题（见 `shared/desktop-shell.ts`）。而 Electron 官方对 frameless
+ * 的定义就是 **no chrome**，chrome 明确包含 **toolbars**——菜单栏随系统标题栏
+ * 一起消失，`win.setMenuBarVisibility(false)` 只是把这件事写死下来。
+ *
+ * 于是「主机管理在菜单栏里」不再成立，而 `editMenuLayout()` 中的
+ * 「编辑主机…」「删除主机…」**没有快捷键**——不搬回托盘就等于彻底失去入口。
+ * 托盘因此重新成为主机管理的可视入口；菜单栏那套保留原样，在非 Windows 平台
+ * （macOS / Linux 仍是有边框窗口）继续作为兜底。
+ *
+ * 做成纯函数是为了让布局可测：顺序、分隔线位置、以及「不再只有两项」这件事
+ * 都能被断言钉住，而不是靠读代码确认。
+ *
+ * @returns 按显示顺序排列的菜单项与分隔线。
  */
-export function trayMenuItemKinds(): readonly TrayMenuItemKind[] {
-  return ['open', 'quit']
+export function trayMenuLayout(): readonly TrayMenuEntry[] {
+  // 顺序：日常操作（打开）→ 主机的集合与管理 → 退出。
+  // 分隔线把「打开客户端」「主机管理」「关闭客户端」三段分开，避免误点退出。
+  return ['open', 'separator', 'hosts', 'addHost', 'editHost', 'separator', 'quit']
 }
 
 /** 「打开客户端」时应对哪个窗口下手。 */

@@ -1,5 +1,12 @@
 import { ipcRenderer } from 'electron'
 import {
+  THEME_SOURCE_ATTRIBUTE,
+  applyTitlebarContract,
+  readThemeSource,
+  titlebarHeightFromArguments,
+  type ThemeSource,
+} from '../shared/desktop-shell.js'
+import {
   notifyRules,
   type AppearRule,
   type AttributeRemovedRule,
@@ -20,6 +27,89 @@ import {
  */
 window.addEventListener('online', () => { ipcRenderer.send('shell:network', true) })
 window.addEventListener('offline', () => { ipcRenderer.send('shell:network', false) })
+
+/**
+ * 在页面根元素可用时执行 `run`；尚未解析出来时等它出现。
+ *
+ * preload 在 document-start 执行：那一刻 `document.body` 通常还是 null，
+ * `document.documentElement` 可能已有（`<html>` 是第一个被解析的元素）也可能没有。
+ * 契约注入**越早越好**——前端首次渲染 layout 时就会读
+ * `hasAttribute("data-windows-titlebar")` 来决定顶部留白与窗口按钮占位，
+ * 晚于那一步就会先闪一下「没有标题栏」的布局。
+ *
+ * @param run - 拿到根元素后执行的动作。
+ */
+function whenRootElementReady(run: (root: HTMLElement) => void): void {
+  const existing = document.documentElement
+  if (existing !== null) {
+    run(existing)
+    return
+  }
+  const observer = new MutationObserver(() => {
+    const root = document.documentElement
+    if (root === null) return
+    observer.disconnect()
+    run(root)
+  })
+  observer.observe(document, { childList: true, subtree: true })
+}
+
+/**
+ * 把页面公布的主题来源转发给主进程，由它设置 `nativeTheme.themeSource`。
+ *
+ * 这是「让原生窗口标题栏/菜单栏跟随应用主题」的**页面半边**：远端换肤只改得到
+ * 网页内部，窗口装饰得靠这条上报才能跟着变。契约与由来见
+ * `shared/desktop-shell.ts`。
+ *
+ * 三点设计取舍：
+ * - **只认属性、不嗅探实现**：读 `data-ds-theme-source`（官方为宿主壳公布的契约），
+ *   不去读皮肤 id、不去猜 token 值——那些是插件的私有面，随版本就变。
+ * - **必须持续观察，而非启动时读一次**：属性在 dsh boot 期间才写入，之后用户每次
+ *   换主题都会重写它。只在启动时读一次，等于「首次加载的主题生效、之后换主题无效」。
+ * - **变化才上报**：前端每次 apply 都会重写该属性，但 `MutationObserver` 在值没变
+ *   时也会回调（属性写入会记录为 mutation）。不比对就会把一次换肤放大成一轮 IPC。
+ *
+ * @param root - 页面根元素。
+ */
+function watchThemeSource(root: HTMLElement): void {
+  /** 上一次已上报的值，用于压掉同值重复写入。 */
+  let reported: ThemeSource | undefined
+
+  const report = (): void => {
+    const source = readThemeSource(root)
+    if (source === undefined || source === reported) return
+    reported = source
+    ipcRenderer.send('shell:theme', source)
+  }
+
+  new MutationObserver(report).observe(root, {
+    attributes: true,
+    attributeFilter: [THEME_SOURCE_ATTRIBUTE],
+  })
+  // 观察器只覆盖「之后」的变化；启动时已经写好的值要靠这一次主动读取。
+  report()
+}
+
+/**
+ * 向页面声明桌面壳契约。
+ *
+ * 两件事**互相独立、各自有各自的触发条件**：
+ * - 主题来源上报：所有平台都做，它只是把前端已经公布的值转给主进程；
+ * - 自绘标题栏声明：只在主进程确实做了无边框窗口时才做，判据是它经
+ *   `additionalArguments` 传进来的高度（见 `desktop-shell.ts` 的
+ *   `TITLEBAR_ARGUMENT`）。**preload 不自己判断平台**——那样会有两处判定，
+ *   一旦漂移（preload 认为该注入、窗口却没做无边框）页面上就会凭空多出
+ *   一条 40px 的空白，且很难归因。
+ */
+function installDesktopShellContract(): void {
+  whenRootElementReady(root => { watchThemeSource(root) })
+
+  const titlebarHeight = titlebarHeightFromArguments(process.argv)
+  if (titlebarHeight === undefined) return
+  whenRootElementReady(root => { applyTitlebarContract(root, titlebarHeight) })
+}
+
+installDesktopShellContract()
 
 /**
  * 通知信号的渲染侧去重窗口（毫秒）。

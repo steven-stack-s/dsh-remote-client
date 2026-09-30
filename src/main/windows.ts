@@ -1,4 +1,4 @@
-import { BrowserWindow, shell, type WebContents } from 'electron'
+import { BrowserWindow, nativeTheme, shell, type WebContents } from 'electron'
 import { join } from 'node:path'
 import { backoffDelay } from './backoff.js'
 import { shouldHideOnClose } from './lifecycle.js'
@@ -16,6 +16,11 @@ import {
   type KeyChord,
 } from './menu-state.js'
 import { tokenHandshakeUrl } from '../shared/host-input.js'
+import {
+  TITLEBAR_ARGUMENT,
+  TITLEBAR_HEIGHT,
+  usesCustomTitlebar,
+} from '../shared/desktop-shell.js'
 import type { HostEntry } from '../shared/types.js'
 
 /**
@@ -294,6 +299,48 @@ export interface HostWindowHandle {
 }
 
 /**
+ * 自绘标题栏上窗口控制按钮的符号颜色。
+ *
+ * 按钮底色是**透明**的（见 `titlebarOverlayOptions`），透出来的是 dsh 用皮肤
+ * token 画的那一条标题栏。它的明暗已经通过 `shell:theme` 与页面同步进
+ * `nativeTheme.themeSource`（见 `index.ts`），所以这里直接问 `nativeTheme`
+ * 即可，不必自己去解析皮肤 id 或 token 值——那些是插件的私有面，随版本就变。
+ *
+ * @returns 适合当前明暗的符号颜色。
+ */
+function titlebarSymbolColor(): string {
+  return nativeTheme.shouldUseDarkColors ? '#ffffff' : '#000000'
+}
+
+/** 自绘标题栏的 overlay 选项（结构上等同 Electron 的 `TitleBarOverlay`）。 */
+interface TitlebarOverlayOptions {
+  color: string
+  symbolColor: string
+  height: number
+}
+
+/**
+ * 自绘标题栏的 overlay 全量选项。
+ *
+ * **每次都返回全量字段**：`setTitleBarOverlay` 接收的是部分字段，只传
+ * `symbolColor` 有把 `height` 打回系统默认值的风险——那会让系统按钮与自绘
+ * 标题栏错位。创建与更新共用本函数，两处就不可能给出不一致的组合。
+ *
+ * `color` 取全透明而非某个具体颜色：Electron 官方文档明确支持 `rgba()` 透明度，
+ * 透明才能让 dsh 用皮肤 token 画的那条标题栏透出来。给一个不透明的颜色等于
+ * 又把顶部盖住了——正是本次要修的那个毛病。
+ *
+ * @returns overlay 选项。
+ */
+function titlebarOverlayOptions(): TitlebarOverlayOptions {
+  return {
+    color: 'rgba(0, 0, 0, 0)',
+    symbolColor: titlebarSymbolColor(),
+    height: TITLEBAR_HEIGHT,
+  }
+}
+
+/**
  * 为某主机创建直载窗口。窗口不做任何请求代理，页面资源全部来自远端，
  * 因此客户端插件与 Host 永远同版。
  *
@@ -323,14 +370,61 @@ export function createHostWindow(
   // 这个变量，因此 `updateHost()` 之后立即生效。
   let host = initialHost
 
+  // 是否用 dsh 自绘的标题栏替代系统标题栏。判定只此一处（见 usesCustomTitlebar）；
+  // preload 不重复判断，只执行主进程经命令行参数交给它的高度。
+  const customTitlebar = usesCustomTitlebar(process.platform)
+
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
     title: host.label,
-    // 与子窗口**同一个函数**产出（见 menu-state.ts 的 contentWindowWebPreferences），
-    // 保证两者 partition 与沙箱开关永远一致。
-    webPreferences: contentWindowWebPreferences({ origin: host.origin, preload: HOST_PRELOAD }),
+    // 无边框：把顶上那一条让给 dsh 自绘。系统标题栏由操作系统绘制、网页 CSS
+    // 够不着，不换掉它就永远停在系统配色上——用户换肤后「上面没变」就是这个。
+    ...(customTitlebar
+      ? {
+          titleBarStyle: 'hidden' as const,
+          // 系统窗口按钮（最小化/最大化/关闭）保留，底色见 titlebarOverlayOptions。
+          titleBarOverlay: titlebarOverlayOptions(),
+        }
+      : {}),
+    webPreferences: {
+      // 与子窗口**同一个函数**产出（见 menu-state.ts 的 contentWindowWebPreferences），
+      // 保证两者 partition 与沙箱开关永远一致。
+      ...contentWindowWebPreferences({ origin: host.origin, preload: HOST_PRELOAD }),
+      // 把高度交给 preload，由它注入页面的 --dsh-windows-titlebar-height。
+      // 与上面的 overlay 同源（TITLEBAR_HEIGHT），否则按钮与标题栏会错位。
+      ...(customTitlebar
+        ? { additionalArguments: [`${TITLEBAR_ARGUMENT}=${String(TITLEBAR_HEIGHT)}`] }
+        : {}),
+    },
   })
+
+  if (customTitlebar) {
+    // 菜单栏在无边框窗口里本就不该出现（Electron 官方：frameless 即 no chrome，
+    // 而 chrome 明确包含 toolbars）。这里显式隐藏是**兜底**：万一某个版本仍把它
+    // 画出来，顶部就会变成「原生菜单栏 + 自绘标题栏」两条叠着。
+    //
+    // 菜单对象本身不动，快捷键（Ctrl+N/Ctrl+Q 等）仍注册在 application menu 上；
+    // 主机管理的**可视**入口已同时搬进托盘（见 tray.ts），不会丢。
+    win.setMenuBarVisibility(false)
+
+    /**
+     * 主题切换后重新对一次符号颜色。
+     *
+     * 皮肤会在浅色与深色之间来回切（那正是用户换主题时发生的事）。符号颜色不跟，
+     * 就会出现「深色按钮配深色底」这种看不见的状态。`nativeTheme` 的 `updated`
+     * 事件在 `themeSource` 被改写时触发（页面经 `shell:theme` 上报，见 index.ts），
+     * 正是这里要的时机。
+     */
+    const syncSymbolColor = (): void => {
+      if (win.isDestroyed()) return
+      win.setTitleBarOverlay(titlebarOverlayOptions())
+    }
+    nativeTheme.on('updated', syncSymbolColor)
+    // **必须摘除**：`nativeTheme` 是进程级单例，监听器随进程存活。不摘的话每
+    // 开关一次主机就多一个挂在已销毁窗口上的回调。
+    win.on('closed', () => { nativeTheme.off('updated', syncSymbolColor) })
+  }
 
   win.on('page-title-updated', (event, title) => {
     // **必须 preventDefault**：Electron 会在这个事件之后把原生标题设成文档

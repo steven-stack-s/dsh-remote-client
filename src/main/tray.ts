@@ -9,19 +9,26 @@ import {
 } from './tray-icons.js'
 import {
   TRAY_MENU_LABELS,
+  canOpenEditWindow,
   trayIconVariant,
-  trayMenuItemKinds,
+  trayMenuLayout,
   type TrayIconVariant,
   type TrayMenuItemKind,
 } from './menu-state.js'
+import { buildHostListItems } from './host-menu.js'
+import type { HostEntry, HostsFile } from '../shared/types.js'
 
 /**
  * 托盘依赖，全部由主进程注入，便于隔离与测试。
  *
- * task-14 起托盘精简为「打开客户端 / 关闭客户端」两项，因此这里不再需要
- * 主机列表、切换、删除、重置登录态等回调——那些功能全部在菜单栏的「主机(H)」
- * 里，不是被删掉了。依赖瘦身本身也是这次精简的一部分：托盘不再读写配置，
- * 因此不可能再出现「托盘菜单与配置不同步」这类缺陷。
+ * task-14 曾把托盘精简为「打开客户端 / 关闭客户端」两项，依赖里因此没有任何
+ * 主机管理回调；现在主机管理回到了托盘（原因见 `menu-state.ts` 的
+ * `trayMenuLayout()`：Windows 上主机窗口无边框 → 菜单栏不再显示），
+ * 这些回调也随之回来。
+ *
+ * `getData` 取的是**取值函数**而非配置快照：托盘存活期间主机随时可能被增删改，
+ * 拿快照会让菜单停在过期状态——那正是当年托盘菜单被砍掉时列出的理由之一。
+ * 现在每次 `refresh()` 都重建菜单，读的都是当下值。
  */
 export interface TrayDeps {
   /** 当前主机是否处于离线重试中（用于图标变灰与 tooltip）。 */
@@ -30,6 +37,24 @@ export interface TrayDeps {
   onOpen: () => void
   /** 关闭客户端（真正退出）。 */
   onQuit: () => void
+  /** 读取当前配置。 */
+  getData: () => HostsFile
+  /** 当前打开的主机 id。 */
+  getCurrentId: () => string | undefined
+  /** 打开指定主机。 */
+  openHost: (host: HostEntry) => void
+  /** 打开「添加主机」欢迎页。 */
+  onAddHost: () => void
+  /** 打开「编辑主机」窗口（初始目标取当前主机；窗口内可切换到别的主机）。 */
+  onEditCurrentHost: () => void
+  /** 重新加载当前主机。 */
+  onReload: () => void
+  /** 立即重试当前主机。 */
+  onRetryNow: () => void
+  /** 清除指定主机的登录态。 */
+  onResetLogin: (host: HostEntry) => void
+  /** 删除指定主机（实现侧负责弹确认框与善后）。 */
+  onRemoveHost: (host: HostEntry) => void
 }
 
 /** 托盘句柄。 */
@@ -97,16 +122,54 @@ function toMenuItem(kind: TrayMenuItemKind, deps: TrayDeps): MenuItemConstructor
   switch (kind) {
     case 'open':
       return { label: TRAY_MENU_LABELS.open, click: () => { deps.onOpen() } }
+    case 'hosts':
+      return { label: TRAY_MENU_LABELS.hosts, submenu: hostSubmenu(deps) }
+    case 'addHost':
+      // 快捷键与菜单栏的「添加主机…」保持一致（accelerator 由 application menu
+      // 提供，这里写出来是为了让托盘里也能看到提示）。
+      return {
+        label: TRAY_MENU_LABELS.addHost,
+        accelerator: 'CmdOrCtrl+N',
+        click: () => { deps.onAddHost() },
+      }
+    case 'editHost':
+      // 与 `menu.ts` 的同名项一样：编辑窗口内部可以切换编辑对象，
+      // 因此只要还有主机就能打开它（「删除主机…」不同，它作用于当前主机）。
+      return {
+        label: TRAY_MENU_LABELS.editHost,
+        enabled: canOpenEditWindow(deps.getData().hosts.length),
+        click: () => { deps.onEditCurrentHost() },
+      }
     case 'quit':
       return { label: TRAY_MENU_LABELS.quit, click: () => { deps.onQuit() } }
   }
 }
 
 /**
- * 创建托盘。
+ * 「主机」子菜单的内容。
  *
- * 菜单固定为「打开客户端 / 关闭客户端」两项，与主机配置无关，因此**只装配一次**，
- * 之后不再重建；`refresh()` 只负责图标与提示（离线状态、系统主题变化）。
+ * 与菜单栏的「主机(H)」共用 `buildHostListItems()`——两处各写一遍，迟早出现
+ * 「托盘能重置登录态、菜单栏不能」这类漂移。Windows 上菜单栏根本不显示，
+ * 托盘是主机管理的**唯一可视入口**，此时两处一致就是可用性本身。
+ *
+ * @param deps - 主进程注入的依赖。
+ * @returns 子菜单项数组。
+ */
+function hostSubmenu(deps: TrayDeps): MenuItemConstructorOptions[] {
+  return buildHostListItems({
+    hosts: deps.getData().hosts,
+    currentId: deps.getCurrentId(),
+    offline: deps.isOffline(),
+    openHost: host => { deps.openHost(host) },
+    onReload: () => { deps.onReload() },
+    onRetryNow: () => { deps.onRetryNow() },
+    onResetLogin: host => { deps.onResetLogin(host) },
+    onRemove: host => { deps.onRemoveHost(host) },
+  })
+}
+
+/**
+ * 创建托盘。
  *
  * 图标按系统主题选色：浅色主题用黑鲸鱼、深色主题用白鲸鱼（Windows 任务栏默认
  * 深色，只给黑色会几乎看不见），离线时一律用灰鲸鱼（离线优先，见
@@ -129,15 +192,36 @@ export function createTray(deps: TrayDeps): TrayHandle {
 
   const tray = new Tray(icons[currentVariant()])
 
+  /**
+   * 按当前配置装配菜单。
+   *
+   * 布局（含分隔线位置）与文案都由 `menu-state.ts` 的纯函数决定，这里只做翻译；
+   * `hosts` 一项的子菜单每次现取主机列表，因此不存在「菜单停在旧配置上」。
+   */
+  const buildMenu = (): Menu =>
+    Menu.buildFromTemplate(
+      trayMenuLayout().map(entry =>
+        entry === 'separator'
+          ? { type: 'separator' as const }
+          : toMenuItem(entry, deps),
+      ),
+    )
+
+  /**
+   * 刷新图标、提示与菜单。
+   *
+   * **菜单在这里重建**（而不是装配一次）：它现在挂着主机列表、当前主机标记与
+   * 离线相关的可用性，这些都会变。`refresh()` 本就是所有这些变化后的统一回调
+   * （见 `index.ts` 的 `refreshChrome()`），在这里重建既够用又不会漏。
+   */
   const refresh = (): void => {
     const offline = deps.isOffline()
     tray.setImage(icons[currentVariant()])
     // 规格 §8：离线时图标变灰，并辅以 tooltip 文案。
     tray.setToolTip(offline ? 'dsh-remote-client（离线，正在重试）' : 'dsh-remote-client')
+    tray.setContextMenu(buildMenu())
   }
 
-  const menu = Menu.buildFromTemplate(trayMenuItemKinds().map(kind => toMenuItem(kind, deps)))
-  tray.setContextMenu(menu)
   refresh()
 
   // 系统主题切换后立刻换色（用户改了 Windows 深色模式却要重启才生效是不能接受的）。

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification } from 'electron'
 import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps, type TrayHandle } from './tray.js'
@@ -15,6 +15,7 @@ import { applyHostEdit } from '../shared/host-edit.js'
 import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
+import { parseThemeSource } from '../shared/desktop-shell.js'
 import { createNotifier, parseNotifyRequest } from './notifications.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
@@ -153,11 +154,12 @@ function removeCurrentHost(): void {
 }
 
 /**
- * 刷新壳层外观：托盘图标状态 + 应用菜单栏。
+ * 刷新壳层外观：托盘（图标 + 提示 + 菜单）+ 应用菜单栏。
  *
- * 主机增删/切换/离线状态变化后必须刷新，否则菜单栏会显示过期的主机列表、
- * 托盘图标会停在旧的离线状态。task-14 起托盘菜单固定为两项、与主机配置无关，
- * 因此托盘这边只需要刷新图标与提示。
+ * 主机增删/切换/离线状态变化后必须刷新，否则两处都会显示过期的主机列表。
+ * 这里是**唯一**的刷新入口：`refresh()` 内部会重建托盘菜单，`rebuild()` 重建
+ * 应用菜单栏，调用方不必（也不该）知道其中细节——曾经托盘菜单与配置无关、
+ * 只需刷图标，那条例外已随主机管理回到托盘而消失。
  */
 function refreshChrome(): void {
   tray?.refresh()
@@ -324,8 +326,10 @@ function resetHostLoginState(host: HostEntry): void {
 /**
  * 装配托盘；只装配一次。失败被捕获并记录，绝不因此中断启动。
  *
- * task-14 起托盘只有「打开客户端 / 关闭客户端」两项，因此依赖里不再有任何
- * 主机管理回调——托盘不再读配置，也就不会再出现「菜单与配置不同步」。
+ * 依赖与 `installAppMenuBar` 几乎同形，因为两者提供的是同一套主机管理动作。
+ * 这一点是**有意的**：Windows 上主机窗口是无边框的，菜单栏不显示，托盘是
+ * 主机管理的唯一可视入口；在 macOS / Linux 上菜单栏仍在，两者并存。
+ * 无论哪种情况，两边都必须给出同样的能力，故共用同一批回调。
  */
 function installTray(): void {
   if (tray !== undefined) return
@@ -334,6 +338,15 @@ function installTray(): void {
       isOffline: () => currentWindow?.isOffline() ?? false,
       onOpen: () => { openClient() },
       onQuit: () => { app.quit() },
+      getData: () => hostsData,
+      getCurrentId: () => currentHostId,
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
+      onAddHost: () => { openWelcomeWindow() },
+      onEditCurrentHost: () => { openEditCurrentHost() },
+      onReload: () => { currentWindow?.reload() },
+      onRetryNow: () => { currentWindow?.retryNow() },
+      onResetLogin: host => { resetHostLoginState(host) },
+      onRemoveHost: host => { void requestRemoveHost(host) },
     }
     tray = createTray(deps)
   } catch (error) {
@@ -437,6 +450,30 @@ ipcMain.on('shell:network', (event, online: unknown) => {
   if (event.sender.id !== hostWebContentsId()) return
   // 网络恢复时立刻重试一次，不必等退避耗尽；离线事件交给 did-fail-load 处理。
   if (online === true) currentWindow?.retryNow()
+})
+
+/**
+ * 主题来源上报：让**原生窗口装饰**跟随应用主题。
+ *
+ * 远端页面换肤只改得到网页内部（CSS 变量、自有样式表），窗口自身的标题栏与
+ * 菜单栏由 Electron / 操作系统绘制，网页 CSS 够不着——用户切主题后「上面那一
+ * 条没变」就是这个缺口。dsh 前端为此在 `<html>` 上公布了 `data-ds-theme-source`，
+ * 并注明该属性就是给宿主壳转发进 `nativeTheme.themeSource` 用的（详见
+ * `shared/desktop-shell.ts` 的文件头说明）。
+ *
+ * 与 `shell:network` 同样校验 sender 必须是**当前主机窗口**：`nativeTheme` 是
+ * 全进程单例，放任欢迎页/编辑页/已销毁的旧窗口上报会让窗口装饰跟着错误的来源
+ * 变。远端页面本就是不可信内容，其上报按外部输入处理（`parseThemeSource` 只认
+ * 三个合法字面量）。
+ *
+ * 刻意**不做**「窗口关闭时复位为 `system`」：切换主机的语义是关旧窗 + 立刻开新窗，
+ * 中途复位会让窗口装饰闪一下系统配色，而新窗口挂载后马上又会上报真实来源。
+ */
+ipcMain.on('shell:theme', (event, raw: unknown) => {
+  if (event.sender.id !== hostWebContentsId()) return
+  const source = parseThemeSource(raw)
+  if (source === undefined) return
+  nativeTheme.themeSource = source
 })
 
 /**

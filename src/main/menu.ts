@@ -3,10 +3,9 @@ import {
   canEditHost,
   canOpenEditWindow,
   editMenuLayout,
-  emptyHostsPlaceholder,
   type EditMenuItemKind,
 } from './menu-state.js'
-import { buildHostMenuItems, hostMenuLabel } from './host-menu.js'
+import { buildHostListItems } from './host-menu.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 /**
@@ -130,25 +129,20 @@ export function installAppMenu(deps: AppMenuDeps): AppMenuHandle {
     const offline = deps.isOffline()
 
     // 主机列表：当前主机带 ●，与托盘菜单的标记保持一致。
-    const hostItems: MenuItemConstructorOptions[] = data.hosts.map(host => ({
-      label: hostMenuLabel(host, currentId, offline),
-      // 子菜单内容与托盘共用同一个构造器——托盘在 Windows 上可能不显示，
-      // 菜单栏是唯一入口，两者能力必须一致、不得各自漂移。
-      submenu: buildHostMenuItems(host, {
-        currentId,
-        offline,
-        openHost: h => { deps.openHost(h) },
-        onReload: () => { deps.onReload() },
-        onRetryNow: () => { deps.onRetryNow() },
-        onResetLogin: h => { deps.onResetLogin(h) },
-        onRemove: h => { deps.onRemoveHost(h) },
-      }),
-    }))
-
-    const placeholder = emptyHostsPlaceholder(data.hosts.length)
-    if (placeholder !== undefined) {
-      hostItems.push({ label: placeholder, enabled: false })
-    }
+    //
+    // **共用 `buildHostListItems`**（托盘那边同样用它）：两者能力必须一致、
+    // 不得各自漂移。Windows 上主机窗口是无边框的，菜单栏不显示，托盘成了
+    // 主机管理的可视入口——此时「两处一致」不再是锦上添花，而是可用性本身。
+    const hostItems = buildHostListItems({
+      hosts: data.hosts,
+      currentId,
+      offline,
+      openHost: h => { deps.openHost(h) },
+      onReload: () => { deps.onReload() },
+      onRetryNow: () => { deps.onRetryNow() },
+      onResetLogin: h => { deps.onResetLogin(h) },
+      onRemove: h => { deps.onRemoveHost(h) },
+    })
 
     const template: MenuItemConstructorOptions[] = [
       // macOS 惯例：首个菜单必须是应用菜单。

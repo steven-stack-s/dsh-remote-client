@@ -17,7 +17,7 @@ import {
   shouldQuitOnAllWindowsClosed,
   shouldRemoveWindowMenuBar,
   trayIconVariant,
-  trayMenuItemKinds,
+  trayMenuLayout,
   trayOpenAction,
   windowOpenDecision,
   windowTitleFor,
@@ -160,23 +160,66 @@ describe('hostAfterEditEffect（#3：改地址保存后的窗口处理）', () =
   })
 })
 
-describe('trayMenuItemKinds（#4：托盘精简为两项）', () => {
-  it('恰好两项：打开客户端 / 关闭客户端', () => {
-    expect(trayMenuItemKinds()).toEqual(['open', 'quit'])
+describe('trayMenuLayout（主机管理回到托盘）', () => {
+  it('布局固定：打开客户端 / 主机管理段 / 关闭客户端', () => {
+    expect(trayMenuLayout()).toEqual([
+      'open',
+      'separator',
+      'hosts',
+      'addHost',
+      'editHost',
+      'separator',
+      'quit',
+    ])
   })
 
   it('文案正确', () => {
     expect(TRAY_MENU_LABELS.open).toBe('打开客户端')
     expect(TRAY_MENU_LABELS.quit).toBe('关闭客户端')
+    expect(TRAY_MENU_LABELS.hosts).toBe('主机')
+    expect(TRAY_MENU_LABELS.addHost).toBe('添加主机…')
+    expect(TRAY_MENU_LABELS.editHost).toBe('编辑主机…')
   })
 
-  it('不再包含任何主机管理项', () => {
-    // 主机管理全部在菜单栏的「主机(H)」里；托盘在 Windows 上还可能不显示，
-    // 把主机管理放在那里本就是错的。这条断言防止有人把它加回来。
-    const labels = trayMenuItemKinds().map(kind => TRAY_MENU_LABELS[kind])
-    for (const gone of ['打开', '重新加载', '立即重试', '重置登录态', '删除…', '添加主机…', '退出']) {
-      expect(labels).not.toContain(gone)
+  it('每个可点击项都有非空文案（漏一个会渲染成一条空白项）', () => {
+    for (const entry of trayMenuLayout()) {
+      if (entry === 'separator') continue
+      expect(TRAY_MENU_LABELS[entry]).toBeTruthy()
     }
+  })
+
+  it('主机管理重新可达：hosts / addHost / editHost 都在', () => {
+    // 这三项是本次加回来的。Windows 上主机窗口无边框 → 菜单栏不再显示，
+    // 而「编辑主机…」「删除主机…」在 editMenuLayout() 里**没有快捷键**，
+    // 托盘不带它们就等于彻底失去入口。这条断言防止有人再把托盘精简回去。
+    expect(trayMenuLayout()).toContain('hosts')
+    expect(trayMenuLayout()).toContain('addHost')
+    expect(trayMenuLayout()).toContain('editHost')
+  })
+
+  it('「退出」紧邻其上的分隔线（避免它在主机列表里被误点）', () => {
+    const layout = trayMenuLayout()
+    expect(layout[layout.indexOf('quit') - 1]).toBe('separator')
+  })
+
+  it('高频操作排在退出之前', () => {
+    const layout = trayMenuLayout()
+    expect(layout.indexOf('open')).toBeLessThan(layout.indexOf('quit'))
+    expect(layout.indexOf('hosts')).toBeLessThan(layout.indexOf('quit'))
+  })
+
+  it('不出现连续两条分隔线（会渲染成双倍留白）', () => {
+    const layout = trayMenuLayout()
+    layout.forEach((entry, index) => {
+      if (entry !== 'separator' || index === 0) return
+      expect(layout[index - 1]).not.toBe('separator')
+    })
+  })
+
+  it('首项不是分隔线、末项也不是（菜单两端出现留白是布局错误）', () => {
+    const layout = trayMenuLayout()
+    expect(layout[0]).not.toBe('separator')
+    expect(layout[layout.length - 1]).not.toBe('separator')
   })
 })
 
