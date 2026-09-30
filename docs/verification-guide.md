@@ -136,13 +136,14 @@ Fill in the address on the welcome page and submit.
 
 | Item | Action | Expected |
 |---|---|---|
-| Login-state persistence | Log in → **menu bar 「编辑(E)」 (Edit) → 「退出」 (Quit)** (not closing the window) → restart the client | Goes straight into the logged-in state |
-| Multi-host isolation | Add a second host (a non-existent address will do) → switch back to the first from 「主机(H)」 (Host) | The two hosts' login states do not affect each other |
-| Tray | Look at the bottom-right of the taskbar (you may need to click `^` for "show hidden icons") | A **whale** icon; the right-click menu has **only two items**: 「打开客户端」 (Open Client), 「关闭客户端」 (Close Client) |
-| Host switching | Menu bar 「主机(H)」 (Host) → click another host | The window switches to that host |
-| Edit host | Menu bar 「编辑(E)」 (Edit) → 「编辑主机…」 (Edit Host…) | You can **dropdown-select any** host at the top of the window (no need to switch to it first); changing the display name / address / token and saving takes effect |
-| Reset login state | 「主机(H)」 (Host) → a host → 「重置登录态」 (Reset Login State) → reopen that host | Back to the login page |
-| Delete | 「主机(H)」 (Host) → a host → 「删除…」 (Delete…) | A confirmation dialog pops up (the default button is 「取消」 (Cancel), so **pressing Enter by accident will not delete**); after deleting, the menu no longer lists it |
+| Login-state persistence | Log in → **tray → 「关闭客户端」 (Close Client)** (not closing the window) → restart the client | Goes straight into the logged-in state |
+| Multi-host isolation | Add a second host (a non-existent address will do) → switch back to the first from the **tray's 「主机」 (Host)** | The two hosts' login states do not affect each other |
+| Tray | Look at the bottom-right of the taskbar (you may need to click `^` for "show hidden icons") | A **whale** icon; the right-click menu contains 「打开客户端」 (Open Client) / 「主机」 (Host) / 「添加主机…」 (Add Host…) / 「编辑主机…」 (Edit Host…) / 「关闭客户端」 (Close Client) |
+| Host switching | Tray 「主机」 (Host) → click another host | The window switches to that host |
+| Edit host | Tray → 「编辑主机…」 (Edit Host…) | You can **dropdown-select any** host at the top of the window (no need to switch to it first); changing the display name / address / token and saving takes effect |
+| Reset login state | Tray 「主机」 (Host) → a host → 「重置登录态」 (Reset Login State) → reopen that host | Back to the login page |
+| Delete | Tray 「主机」 (Host) → a host → 「删除…」 (Delete…) | A confirmation dialog pops up (the default button is 「取消」 (Cancel), so **pressing Enter by accident will not delete**); after deleting, the menu no longer lists it |
+| **Top strip follows the theme** | **Change the skin** in dsh's settings (e.g. dark ↔ light) | The top strip of the window (the title bar dsh draws itself) **changes colour with it** and matches the page skin; the system minimise/maximise/close buttons remain usable and clearly visible |
 | DevTools | Press `Ctrl+Shift+I` or `F12` in the dsh window | Opens the developer tools (for diagnostics, and also the entry point to the DOM recon script) |
 | Drag-and-drop upload | Drag a local file into the dsh window | It goes into the remote workspace as an attachment (a front-end capability; the shell does not handle it) |
 
@@ -150,39 +151,46 @@ Fill in the address on the welcome page and submit.
 >
 > For a host that is **already open**, choosing 「打开」 (Open) only brings the window to the foreground (`show()` + `focus()`) and **does not reload the page** — this is deliberate, to avoid two WebSockets coexisting for the same address.
 >
-> **When you need to reload the page, use 「主机(H)」 (Host) → that host → 「重新加载」 (Reload), or press `Ctrl+R`.**
+> **When you need to reload the page, use 「主机」 (Host) → that host → 「重新加载」 (Reload), or press `Ctrl+R`.**
 
-### 3.00 UI composition: the menu bar manages hosts, the tray only handles on/off
+### 3.00 UI composition: on Windows, host management lives in the tray
 
-**Menu bar** (shown at the top of every window on Windows) — **all host management lives here**:
+> **Every 「tray → …」 and 「Host → …」 entry point below also exists in the menu bar on macOS / Linux** (those platforms keep framed windows, so their menu bar is still shown). On Windows, always go through the tray.
 
-```
-编辑(E)                    主机(H)
- ├ 添加主机…   Ctrl+N       └ 每台主机一个子菜单：
- ├ 编辑主机…                    ├ 打开
- ├ 删除主机…                    ├ 重新加载      （仅当前主机）
- ├ ──────────                   ├ 立即重试      （仅当前主机且离线）
- └ 退出        Ctrl+Q           ├ ──────────
-                                ├ 重置登录态
-                                └ 删除…
-```
-
-(Reading the tree: 「编辑(E)」 = Edit(E), 「添加主机…」 = Add Host… `Ctrl+N`, 「编辑主机…」 = Edit Host…, 「删除主机…」 = Delete Host…, 「退出」 = Quit `Ctrl+Q`; 「主机(H)」 = Host(H) with one submenu per host: 「打开」 = Open, 「重新加载」 = Reload (current host only), 「立即重试」 = Retry Now (current host only, and only while offline), 「重置登录态」 = Reset Login State, 「删除…」 = Delete….)
-
-> The 「添加主机 / 编辑主机 / 删除主机」 (Add Host / Edit Host / Delete Host) items are operations **at the same level**, so there is **no separator** between them.
-
-**System tray** (bottom-right of the taskbar; you may need to click `^` to expand hidden icons) — **only two items**:
+**The window on Windows** (the focus of this section, because it differs from the other platforms):
 
 ```
-打开客户端     ← 唤起窗口（已隐藏则唤回；已销毁则按当前主机重开）
-关闭客户端     ← 真正退出（点窗口的 ✕ 只是隐藏，不会退出）
+┌────────────────────────────────────────────┬──────────────┐
+│  (title bar drawn by dsh: follows the app  │  ─  □  ✕     │  ← system window buttons
+│   theme, draggable)                        │              │     are drawn at its right
+├────────────────────────────────────────────┴──────────────┤
+│                       the dsh page                         │
+└────────────────────────────────────────────────────────────┘
 ```
 
-(「打开客户端」 = Open Client: raise the window — if it is hidden, bring it back; if it has been destroyed, reopen it for the current host. 「关闭客户端」 = Close Client: really quit — clicking the window's ✕ only hides it and does not quit.)
+- The window is **frameless**: the system title bar is gone, and the top strip is drawn by dsh itself — which is why it **changes colour together with the skin plugin**.
+- The **native menu bar is not shown** (Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars). Its accelerators still work (`Ctrl+N` to add a host, `Ctrl+Q` to quit), but they are **invisible**.
+- Because the menu bar is gone, **all host management lives in the tray** (next section).
 
-> **Why the tray is so minimal**: the tray menu used to contain the full host management, but that was **redundant** (all of it is in the menu bar), and the tray itself happens to be the historically least reliable part (on Windows it once did not show at all). Now the tray only carries the two things the menu bar cannot do: raising the window and quitting.
+**System tray** (bottom-right of the taskbar; you may need to click `^` to expand hidden icons) — both host management and on/off live here:
+
+```
+打开客户端     ← raise the window (bring it back if hidden; reopen for the current host if destroyed)
+──────────────
+主机 ▸          ← one submenu per host: 打开 / 重新加载 / 立即重试 / 重置登录态 / 删除…
+添加主机…       ← Ctrl+N
+编辑主机…       ← the window lets you dropdown-switch to any host
+──────────────
+关闭客户端     ← really quit (clicking the window's ✕ only hides it and does not quit)
+```
+
+(「打开客户端」 = Open Client, 「主机」 = Host, 「添加主机…」 = Add Host…, 「编辑主机…」 = Edit Host…, 「关闭客户端」 = Close Client. Per-host items: 「打开」 = Open, 「重新加载」 = Reload, 「立即重试」 = Retry Now, 「重置登录态」 = Reset Login State, 「删除…」 = Delete….)
+
+> **Why the tray took host management back**: the tray used to carry only 「打开客户端」 (Open Client) and 「关闭客户端」 (Close Client), on the grounds that host management was **already fully available in the menu bar** and the tray is the historically least reliable part. That reasoning held at the time, but its **premise is now gone**: once the Windows window became frameless the menu bar stopped being shown, and 「编辑主机…」 (Edit Host…) and 「删除主机…」 (Delete Host…) **have no keyboard shortcut** — not moving them into the tray would have meant losing those entry points entirely.
 >
 > **The icon recolors with the system theme**: a **black whale** in the light theme, a **white whale** in the dark theme, and **grey** while offline-retrying (offline takes precedence over the theme).
+>
+> **The menu is rebuilt as the configuration changes**: after adding/removing a host, switching the current host, or a change in offline state, the tray menu immediately reflects the latest state instead of sitting on a stale list.
 
 **If the tray does not appear**, start the client from the **command line** to capture logs (it will explicitly print the failure reason instead of failing silently):
 
@@ -191,7 +199,7 @@ Fill in the address on the welcome page and submit.
 ```
 
 Watch for `[dsh-remote-client] 托盘创建失败…` or `启动流程失败…`. (Those mean "tray creation failed…" and "startup flow failed…".)
-**Whether or not the tray was created successfully, the menu bar should be usable** — this was the core guarantee behind adding the menu bar as a fallback channel.
+**On Windows, an unusable tray means host management has no entry point at all** (the menu bar is no longer shown), so this item matters more there than ever; if it really fails, start from the command line as shown above to capture the evidence, and use `Ctrl+N` to add a host in the meantime.
 
 > Additional note: if the tray **fails to assemble**, the app falls back to the "quitting when all windows are closed" behaviour. This is deliberate — otherwise the app would become a ghost process that you can neither see nor quit.
 
@@ -225,7 +233,7 @@ If your dsh address goes through a login portal (typically the UGREEN UGOS conta
 
 **This is not a client failure, and the address is not filled in wrongly** — visiting the same address in a browser "once more while already logged in" goes straight into dsh.
 
-**What to do**: after completing the login in the client window, use the **menu bar 「主机(H)」 (Host) → that host → 「重新加载」 (Reload)** (or press `Ctrl+R`).
+**What to do**: after completing the login in the client window, use the **tray's 「主机」 (Host) → that host → 「重新加载」 (Reload)** (or press `Ctrl+R`; on macOS / Linux this entry point is in the menu bar's 「主机(H)」 (Host)).
 The client will then re-request **the original address from the configuration** (instead of staying on the portal desktop), carrying the login state it has just obtained, and you get into dsh.
 
 > Using `webContents.reload()` does not work — that only loads the portal desktop once more. This is also why 「重新加载」 (Reload) was made a separate menu item instead of reusing 「打开」 (Open).
@@ -292,7 +300,7 @@ The spec requires exponential-backoff retry (1s→2s→4s→8s→…→30s), whi
 - The window switches to the offline page;
 - **A countdown appears in the window title** (of the form 「离线，N 秒后重试」, i.e. "offline, retrying in N seconds", with the interval doubling each time up to a 30s cap);
 - The tray icon turns **grey** and the tooltip shows 「（离线，正在重试）」 ("(offline, retrying)");
-- 「立即重试」 (Retry Now) appears for that host under the menu bar's 「主机(H)」 (Host); clicking it retries immediately.
+- 「立即重试」 (Retry Now) appears for that host under the tray's 「主机」 (Host); clicking it retries immediately (on macOS / Linux it is under the menu bar's 「主机(H)」 (Host)).
 
 **Recovery**: `docker compose start`.
 
