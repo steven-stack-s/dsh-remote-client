@@ -1,5 +1,7 @@
 # 图形环境验证指南（Windows）
 
+[English](verification-guide.md) | [简体中文](verification-guide.zh-CN.md)
+
 本指南用于在 **Windows** 上验证 dsh-remote-client。
 
 本开发环境是无 GUI 的 Linux 容器，因此下列内容**无法在此验证**：窗口外观、菜单与托盘的实际呈现、登录态持久化、离线重连行为等。这份指南就是为把它们逐项验证出来而写的。

@@ -1,4 +1,10 @@
 /**
+ * (English) Dev-time DevTools Console probe for the dsh front-end. It hunts for the
+ * stable DOM signals (approval request appears / new assistant message) consumed by
+ * the native-notification feature. Usage: paste this whole file into the DevTools
+ * Console of a dsh window. The notes below are in Chinese; the comment text is
+ * intentionally untranslated — this is a developer tool, not user-facing docs.
+ *
  * DSH DOM 特征勘察脚本
  * =====================
  *

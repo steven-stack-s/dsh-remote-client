@@ -331,7 +331,7 @@ export function matchesReloadChord(chord: KeyChord): boolean {
  *
  * Electron **默认不提供** DevTools 快捷键（那是 Chrome 的行为，不是 Electron 的），
  * 所以用户在客户端里按 `Ctrl+Shift+I` 一直没有反应——而 DevTools 的 Console 正是
- * 运行 `docs/dom-勘察脚本.js`（为通知功能找选择器）的唯一入口。
+ * 运行 `docs/dom-recon-script.js`（为通知功能找选择器）的唯一入口。
  *
  * 支持三种按法：
  * - `Ctrl+Shift+I`（Windows/Linux 惯例）；
