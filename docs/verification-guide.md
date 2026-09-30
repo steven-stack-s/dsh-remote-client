@@ -22,11 +22,19 @@ This development environment is a GUI-less Linux container, so the following **c
 **If all you want to verify is "can the client be used", you do not need any development environment** — the installer has already been built:
 
 ```
-release/DSH Remote Client-0.1.0-setup.exe   （约 106MB，自带 Electron 运行时）
-sha256: 4c63eb16ce9dd780079246d034507e0ea990634cb1475a967b196a46760c3a81
+release/DSH Remote Client-0.1.1-setup.exe   （约 106MB，自带 Electron 运行时）
 ```
 
-(The annotation on the first line means: about 106MB, with the Electron runtime bundled in.)
+(The annotation means: about 106MB, with the Electron runtime bundled in.)
+
+To check the package is the right one, compare its **SHA256** — the value is printed in
+the matching GitHub Release notes (CI prints it during the build). It is deliberately
+**not** hard-coded here: it changes with every build, so a hard-coded value is bound to
+go stale — and a stale hash is worse than none, because it makes people think they
+downloaded the wrong file.
+
+> A local build (`./scripts/build-windows.sh`) produces the same filename but is not
+> published to a Release; compare it against whatever your local build printed.
 
 Double-click to install (no administrator privileges needed), then jump straight to §1.
 
