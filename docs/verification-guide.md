@@ -137,13 +137,14 @@ Fill in the address on the welcome page and submit.
 | Item | Action | Expected |
 |---|---|---|
 | Login-state persistence | Log in → **tray → 「关闭客户端」 (Close Client)** (not closing the window) → restart the client | Goes straight into the logged-in state |
-| Multi-host isolation | Add a second host (a non-existent address will do) → switch back to the first from the **tray's 「主机」 (Host)** | The two hosts' login states do not affect each other |
-| Tray | Look at the bottom-right of the taskbar (you may need to click `^` for "show hidden icons") | A **whale** icon; the right-click menu contains 「打开客户端」 (Open Client) / 「主机」 (Host) / 「添加主机…」 (Add Host…) / 「编辑主机…」 (Edit Host…) / 「关闭客户端」 (Close Client) |
-| Host switching | Tray 「主机」 (Host) → click another host | The window switches to that host |
-| Edit host | Tray → 「编辑主机…」 (Edit Host…) | You can **dropdown-select any** host at the top of the window (no need to switch to it first); changing the display name / address / token and saving takes effect |
-| Reset login state | Tray 「主机」 (Host) → a host → 「重置登录态」 (Reset Login State) → reopen that host | Back to the login page |
-| Delete | Tray 「主机」 (Host) → a host → 「删除…」 (Delete…) | A confirmation dialog pops up (the default button is 「取消」 (Cancel), so **pressing Enter by accident will not delete**); after deleting, the menu no longer lists it |
+| Multi-host isolation | Add a second host (a non-existent address will do) → switch back to the first from the **tray's 「主机列表」 (Host List)** | The two hosts' login states do not affect each other |
+| Tray | Look at the bottom-right of the taskbar (you may need to click `^` for "show hidden icons") | A **whale** icon; the right-click menu contains 「打开客户端」 (Open Client) / 「主机列表」 (Host List) / 「添加主机…」 (Add Host…) / 「编辑主机…」 (Edit Host…) / 「关闭客户端」 (Close Client) |
+| Host switching | Tray 「主机列表」 (Host List) → click another host | The window switches to that host |
+| Edit host | Tray → 「编辑主机…」 (Edit Host…), or press `Ctrl+E` | You can **dropdown-select any** host at the top of the window (no need to switch to it first); changing the display name / address / token and saving takes effect |
+| Reset login state | Tray 「主机列表」 (Host List) → a host → 「重置登录态」 (Reset Login State) → reopen that host | Back to the login page |
+| Delete | Tray 「主机列表」 (Host List) → a host → 「删除…」 (Delete…) | A confirmation dialog pops up (the default button is 「取消」 (Cancel), so **pressing Enter by accident will not delete**); after deleting, the menu no longer lists it |
 | **Top strip follows the theme** | **Change the skin** in dsh's settings (e.g. dark ↔ light) | The top strip of the window (the title bar dsh draws itself) **changes colour with it** and matches the page skin; the system minimise/maximise/close buttons remain usable and clearly visible |
+| Reload page | Press `Ctrl+R` in the dsh window | The page reloads (re-requests the host origin; the same as the tray’s 「重新加载」 (Reload)) |
 | DevTools | Press `Ctrl+Shift+I` or `F12` in the dsh window | Opens the developer tools (for diagnostics, and also the entry point to the DOM recon script) |
 | Drag-and-drop upload | Drag a local file into the dsh window | It goes into the remote workspace as an attachment (a front-end capability; the shell does not handle it) |
 
@@ -151,7 +152,7 @@ Fill in the address on the welcome page and submit.
 >
 > For a host that is **already open**, choosing 「打开」 (Open) only brings the window to the foreground (`show()` + `focus()`) and **does not reload the page** — this is deliberate, to avoid two WebSockets coexisting for the same address.
 >
-> **When you need to reload the page, use 「主机」 (Host) → that host → 「重新加载」 (Reload), or press `Ctrl+R`.**
+> **When you need to reload the page, use 「主机列表」 (Host List) → that host → 「重新加载」 (Reload), or press `Ctrl+R`.**
 
 ### 3.00 UI composition: on Windows, host management lives in the tray
 
@@ -169,7 +170,7 @@ Fill in the address on the welcome page and submit.
 ```
 
 - The window is **frameless**: the system title bar is gone, and the top strip is drawn by dsh itself — which is why it **changes colour together with the skin plugin**.
-- The **native menu bar is not shown** (Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars). Its accelerators still work (`Ctrl+N` to add a host, `Ctrl+Q` to quit), but they are **invisible**.
+- The **native menu bar is not shown** (Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars). Its accelerators still work (`Ctrl+N` to add a host, `Ctrl+E` to edit one, `Ctrl+Q` to quit), but they are **invisible** — once the menu bar is hidden, these keys have no surface left to advertise them.
 - Because the menu bar is gone, **all host management lives in the tray** (next section).
 
 **System tray** (bottom-right of the taskbar; you may need to click `^` to expand hidden icons) — both host management and on/off live here:
@@ -177,9 +178,9 @@ Fill in the address on the welcome page and submit.
 ```
 打开客户端     ← raise the window (bring it back if hidden; reopen for the current host if destroyed)
 ──────────────
-主机 ▸          ← one submenu per host: 打开 / 重新加载 / 立即重试 / 重置登录态 / 删除…
+主机列表 ▸          ← one submenu per host: 打开 / 重新加载 / 立即重试 / 重置登录态 / 删除…
 添加主机…       ← Ctrl+N
-编辑主机…       ← the window lets you dropdown-switch to any host
+编辑主机…       ← Ctrl+E (the window lets you dropdown-switch to any host)
 ──────────────
 关闭客户端     ← really quit (clicking the window's ✕ only hides it and does not quit)
 ```
@@ -233,7 +234,7 @@ If your dsh address goes through a login portal (typically the UGREEN UGOS conta
 
 **This is not a client failure, and the address is not filled in wrongly** — visiting the same address in a browser "once more while already logged in" goes straight into dsh.
 
-**What to do**: after completing the login in the client window, use the **tray's 「主机」 (Host) → that host → 「重新加载」 (Reload)** (or press `Ctrl+R`; on macOS / Linux this entry point is in the menu bar's 「主机(H)」 (Host)).
+**What to do**: after completing the login in the client window, use the **tray's 「主机列表」 (Host List) → that host → 「重新加载」 (Reload)** (or press `Ctrl+R`; on macOS / Linux this entry point is in the menu bar's 「主机(H)」 (Host)).
 The client will then re-request **the original address from the configuration** (instead of staying on the portal desktop), carrying the login state it has just obtained, and you get into dsh.
 
 > Using `webContents.reload()` does not work — that only loads the portal desktop once more. This is also why 「重新加载」 (Reload) was made a separate menu item instead of reusing 「打开」 (Open).
@@ -300,7 +301,7 @@ The spec requires exponential-backoff retry (1s→2s→4s→8s→…→30s), whi
 - The window switches to the offline page;
 - **A countdown appears in the window title** (of the form 「离线，N 秒后重试」, i.e. "offline, retrying in N seconds", with the interval doubling each time up to a 30s cap);
 - The tray icon turns **grey** and the tooltip shows 「（离线，正在重试）」 ("(offline, retrying)");
-- 「立即重试」 (Retry Now) appears for that host under the tray's 「主机」 (Host); clicking it retries immediately (on macOS / Linux it is under the menu bar's 「主机(H)」 (Host)).
+- 「立即重试」 (Retry Now) appears for that host under the tray's 「主机列表」 (Host List); clicking it retries immediately (on macOS / Linux it is under the menu bar's 「主机(H)」 (Host)).
 
 **Recovery**: `docker compose start`.
 
