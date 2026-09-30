@@ -26,6 +26,21 @@
 
 - **安全上下文**：对已配置的 `http://` origin 设置 `unsafely-treat-insecure-origin-as-secure`，让 `navigator.clipboard` 可用。仅对显式配置的 origin 生效，不做通配。
 
+- **顶部跟随应用主题**：dsh 的换肤插件只改得到网页内部，而窗口标题栏与菜单栏由操作系统绘制，网页 CSS 够不着——不额外做一步，换肤后就会出现「页面全变了、最上面那一条没变」。客户端为此做两件事：把 dsh 前端公布的 `data-ds-theme-source` 转发进 `nativeTheme.themeSource`（官方为宿主壳预留的契约），并在 Windows 上改用**无边框窗口**，把顶上那一条让给 dsh 自绘。
+
+  代价是 Windows 上**原生菜单栏不再显示**——Electron 对 frameless 的定义就是 no chrome，chrome 明确包含 toolbars。主机管理因此同时放进了托盘；菜单栏那套快捷键仍然有效（`Ctrl+N` 添加主机、`Ctrl+E` 编辑主机、`Ctrl+Q` 退出），只是失去了提示面。macOS / Linux 仍是有边框窗口，菜单栏照旧。
+
+## 功能
+
+- **多主机管理**：添加 / 切换 / 重命名 / 删除；每台主机独占一份登录态（partition 隔离）。
+- **免插件接入**：未装认证插件的 dsh，可用 `dsh web` 打印的 launch token 直接接入。
+- **离线自愈**：连不上时显示覆盖页并指数退避重试（1s→2s→…→30s），网络恢复即刻重试。
+- **链接分流**：指向已配置主机或当前站点的链接在客户端内导航；外链交给系统浏览器。
+- **原生通知**：审批请求在窗口失焦时弹系统通知。
+- **托盘**：主机管理与开关都在这里（Windows 上无边框窗口不显示菜单栏，见「设计要点」）。
+- **快捷键**：`Ctrl+N` 添加主机、`Ctrl+E` 编辑主机、`Ctrl+R` 刷新页面、`Ctrl+Shift+I` / `F12` 开 DevTools。
+- **Windows 安装包**：自带 Electron 运行时，双击即装，由 CI 构建。
+
 ## 远端前置条件（二选一）
 
 否则表现为「页面能打开，但 `/api` 全部 403」——这是 dsh 的 trust fence（防 DNS rebinding）在拦截非 loopback 的 Host。
@@ -102,15 +117,3 @@ git tag v0.1.0 && git push origin v0.1.0
 详见脚本头部注释。**在 Windows 本机构建则不需要 wine。**
 
 产物：`release/DSH Remote Client-<版本>-setup.exe`。
-
----
-
-## 状态
-
-**已实现**：多主机配置与切换、登录态隔离与保持、直载窗口、离线覆盖页与**指数退避自动重连**（1s→2s→…→30s，网络恢复即刻重试）、**launch token 免插件接入**（未装认证插件的 dsh 靠它接入，已经真机验证）、应用菜单栏（主机管理 + 编辑主机窗口，可切换编辑任意一台）、托盘（主机管理 + 打开/关闭客户端）、**无边框标题栏**（Windows：顶部由 dsh 自绘，因而**跟随应用主题**、与皮肤同色；见下）、**链接分流**（指向已配置主机 → 在客户端内打开；外链 → 系统默认浏览器）、**原生通知**（审批请求；选择器取自 dsh 上游组件源码，已真机验证）、**DeepSeek 鲸鱼图标**（随系统主题变色）、`Ctrl+N` / `Ctrl+E` 添加与编辑主机、`Ctrl+R` 刷新页面、`Ctrl+Shift+I` / `F12` 开 DevTools、**Windows 安装包（CI 构建）**。
-
-**主题跟随**：dsh 的换肤插件只改得到网页内部，而窗口标题栏与菜单栏归操作系统绘制，网页 CSS 够不着——不额外做一步，用户换肤后就会出现「页面全变了、最上面那一条没变」。客户端为此做两件事：把 dsh 前端公布的 `data-ds-theme-source` 转发进 `nativeTheme.themeSource`（官方为宿主壳预留的契约），并在 Windows 上改用**无边框窗口**，把顶上那一条让给 dsh 自绘。
-
-代价是 Windows 上**原生菜单栏不再显示**——Electron 对 frameless 的定义就是 no chrome，chrome 明确包含 toolbars。主机管理因此同时放进了托盘；菜单栏那套快捷键仍然有效（`Ctrl+N` 添加主机、`Ctrl+E` 编辑主机、`Ctrl+Q` 退出），只是失去了提示面。macOS / Linux 仍是有边框窗口，菜单栏照旧。
-
-**待验证**：消息通知（agent 回复完毕时提醒）需真机确认——它只在窗口**失焦**时弹出。

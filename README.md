@@ -28,6 +28,21 @@ This client does the opposite: **the backend always stays remote**. The window l
 
 - **Secure context**: for configured `http://` origins, `unsafely-treat-insecure-origin-as-secure` is set so that `navigator.clipboard` works. It only takes effect for explicitly configured origins, never as a wildcard.
 
+- **The top strip follows the app theme**: a dsh skin plugin can only restyle the page itself; the window title bar and menu bar are drawn by the operating system and are out of reach of page CSS. Without an extra step, changing the skin leaves you with "the whole page changed, but the top strip did not". The client therefore does two things: it forwards `data-ds-theme-source`, which the dsh frontend publishes, into `nativeTheme.themeSource` (the contract dsh officially reserves for host shells), and on Windows it switches to a **frameless window** so that dsh can draw the top strip itself.
+
+  The cost is that on Windows the **native menu bar is no longer shown** — Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars. Host management has therefore also moved into the tray; the menu bar's accelerators still work (`Ctrl+N` to add a host, `Ctrl+E` to edit one, `Ctrl+Q` to quit), they simply have no surface left to advertise them. macOS / Linux keep their framed windows and their menu bar.
+
+## Features
+
+- **Multi-host management**: add / switch / rename / delete; each host gets its own isolated login state (per-partition).
+- **Access without a plugin**: a dsh without the auth plugin can be reached with the launch token printed by `dsh web`.
+- **Offline self-healing**: when the host is unreachable the client shows an overlay page and retries with exponential backoff (1s→2s→…→30s), retrying immediately once the network recovers.
+- **Link routing**: links to a configured host or the current site navigate inside the client; external links go to the system browser.
+- **Native notifications**: approval requests raise a system notification while the window is unfocused.
+- **Tray**: host management and on/off both live here (on Windows the frameless window shows no menu bar — see Design highlights).
+- **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools.
+- **Windows installer**: ships its own Electron runtime, double-click to install, built by CI.
+
 ## Remote prerequisites (choose one)
 
 Otherwise the symptom is "the page opens, but `/api` returns 403 for everything" — that is dsh's trust fence (anti DNS-rebinding) blocking non-loopback Hosts.
@@ -104,15 +119,3 @@ See [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)
 This script codifies the four pitfalls actually hit when cross-building a Windows package on Linux (Node ≥ 22.12, wine is required, the binary tools must go through a mirror, `pnpm install --force` to fix the missing platform bindings) — see the script header for details. **Building natively on Windows does not need wine.**
 
 Artifact: `release/DSH Remote Client-<version>-setup.exe`.
-
----
-
-## Status
-
-**Implemented**: multi-host configuration and switching, login-state isolation and persistence, the direct-load window, the offline overlay page with **exponential-backoff auto-reconnect** (1s→2s→…→30s, retrying immediately once the network recovers), **launch-token access without a plugin** (a dsh without the auth plugin gets in with it; already verified on real hardware), the application menu bar (host management + the edit-host window, where you can switch to edit any one of them), the tray (host management + open/close client), the **frameless title bar** (on Windows: the top strip is drawn by dsh itself, so it **follows the app theme** and matches the skin — see below), **link routing** (links to a configured host → open inside the client; external links → the system default browser), **native notifications** (approval requests; selectors taken from dsh upstream component sources, verified on real hardware), the **DeepSeek whale icon** (recolored with the system theme), `Ctrl+N` / `Ctrl+E` to add and edit hosts, `Ctrl+R` to reload the page, `Ctrl+Shift+I` / `F12` to open DevTools, and the **Windows installer (built by CI)**.
-
-**Theme following**: a dsh skin plugin can only restyle the page itself; the window title bar and menu bar are drawn by the operating system and are out of reach of page CSS. Without an extra step, changing the skin leaves you with "the whole page changed, but the top strip did not". The client therefore does two things: it forwards `data-ds-theme-source`, which the dsh frontend publishes, into `nativeTheme.themeSource` (the contract dsh officially reserves for host shells), and on Windows it switches to a **frameless window** so that dsh can draw the top strip itself.
-
-The cost is that on Windows the **native menu bar is no longer shown** — Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars. Host management has therefore also moved into the tray; the menu bar's accelerators still work (`Ctrl+N` to add a host, `Ctrl+E` to edit one, `Ctrl+Q` to quit), they simply have no surface left to advertise them. macOS / Linux keep their framed windows and their menu bar.
-
-**To be verified**: message notifications (reminding you when an agent reply has finished) need on-device confirmation — they only pop up while the window is **unfocused**.
