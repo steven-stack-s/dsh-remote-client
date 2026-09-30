@@ -32,7 +32,7 @@ sha256: 4c63eb16ce9dd780079246d034507e0ea990634cb1475a967b196a46760c3a81
 
 ### 0.1 开发环境要求（仅改代码时需要）
 
-- **Node.js ≥ 20**（[nodejs.org](https://nodejs.org/) 下载 LTS 版，安装时勾选 "Add to PATH"）
+- **Node.js ≥ 20.19**（[nodejs.org](https://nodejs.org/) 下载 LTS 版，安装时勾选 "Add to PATH"）—— 构建工具链（vite / electron-vite）实际要求 `^20.19.0 || >=22.12.0`。若你走**交叉构建脚本**（§0.2 的方式一），它另有 `≥ 22.12` 的要求，见 `scripts/build-windows.sh` 的文件头
 - **pnpm**：安装 Node 后开 PowerShell 执行
   ```powershell
   corepack enable
@@ -48,7 +48,7 @@ pnpm -v
 
 ### 0.2 把代码拷到 Windows
 
-仓库体积仅 **61K**（不含 `node_modules`），传输很轻。在开发机上打包：
+仓库体积约 **590K**（61 个文件，不含 `node_modules`），传输很轻。在开发机上打包：
 
 ```bash
 # 开发机（Linux 容器内）
@@ -200,7 +200,7 @@ http://127.0.0.1:3080/?token=xxxxxxxxxxxxxxxx
 > ⚠️ **请整段复制，不要手工编辑那串 token**。URL 标准会把 query 里的 `+` 解码成空格 —— 如果 token 里恰好含 `+`，手工抄写极易出错。直接复制粘贴最稳。
 
 > ⚠️ **这个 token 每次 dsh 重启都会变**（进程启动时随机生成，没有配置能让它固定）。
-> dsh 重启后如果又报 401，客户端会自动**重放一次**握手；若仍失败，请用「文件 → 添加主机…」把**新**的带 token 地址重新粘贴一次
+> dsh 重启后如果又报 401，客户端会自动**重放一次**握手；若仍失败，请用「编辑(E) → 添加主机…」把**新**的带 token 地址重新粘贴一次
 > （重新添加同一地址不会丢失已保存的登录态——分区是按 origin 命名的）。
 
 ### 3.0 走 SSO 门户的地址：登录后需要手动「重新加载」

@@ -36,7 +36,7 @@ Double-click to install (no administrator privileges needed), then jump straight
 
 ### 0.1 Development environment requirements (only needed when changing code)
 
-- **Node.js ≥ 20** (download the LTS from [nodejs.org](https://nodejs.org/), and tick "Add to PATH" during installation)
+- **Node.js ≥ 20.19** (download the LTS from [nodejs.org](https://nodejs.org/), and tick "Add to PATH" during installation) — the build toolchain (vite / electron-vite) actually requires `^20.19.0 || >=22.12.0`. If you use the **cross-build script** (§0.2 option 1), it separately requires `≥ 22.12`; see the header of `scripts/build-windows.sh`
 - **pnpm**: after installing Node, open PowerShell and run
   ```powershell
   corepack enable
@@ -53,7 +53,7 @@ pnpm -v
 
 ### 0.2 Copy the code to Windows
 
-The repository is only **61K** (excluding `node_modules`), so transferring it is light. Pack it on the development machine:
+The repository is about **590K** (61 files, excluding `node_modules`), so transferring it is light. Pack it on the development machine:
 
 ```bash
 # 开发机（Linux 容器内）
@@ -211,7 +211,7 @@ The client splits it into the origin (`http://127.0.0.1:3080`) and the token by 
 > ⚠️ **Copy the whole thing; do not hand-edit that token string.** The URL standard decodes `+` in the query as a space — if the token happens to contain `+`, hand-copying is very error-prone. Copy and paste is the most reliable.
 
 > ⚠️ **This token changes every time dsh restarts** (it is randomly generated when the process starts, and no configuration can pin it).
-> If you get a 401 again after a dsh restart, the client automatically **replays** the handshake once; if that still fails, use 「文件 → 添加主机…」 to paste the **new** token-carrying address again
+> If you get a 401 again after a dsh restart, the client automatically **replays** the handshake once; if that still fails, use 「编辑(E) → 添加主机…」 (Edit(E) → Add Host…) to paste the **new** token-carrying address again
 > (re-adding the same address does not lose the saved login state — partitions are named after the origin).
 
 ### 3.0 Addresses behind an SSO portal: after logging in you must manually 「重新加载」 (Reload)
