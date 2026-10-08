@@ -22,8 +22,14 @@ This development environment is a GUI-less Linux container, so the following **c
 **If all you want to verify is "can the client be used", you do not need any development environment** — the installer has already been built:
 
 ```
-release/DSH Remote Client-0.1.1-setup.exe   （约 106MB，自带 Electron 运行时）
+release/DSH Remote Client-<版本>-setup.exe   （约 106MB，自带 Electron 运行时）
 ```
+
+`<版本>` is the version of the copy you obtained (see the filename or the Release
+title) — it is **deliberately not hard-coded**, for the same reason the SHA256 below
+is not: it changes with every release, so a hard-coded value inevitably becomes wrong
+after some version (that already happened once: the guide still carried the 0.1.0 hash
+while 0.1.1 was the published build).
 
 (The annotation means: about 106MB, with the Electron runtime bundled in.)
 
