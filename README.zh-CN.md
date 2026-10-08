@@ -73,7 +73,7 @@ pnpm dev         # 启动客户端（需要图形环境）
 - **cookie 名绑定 authority**（`dsh-auth-` + `sha256(authority)`），因此换 IP / 换域名访问会被视为**新主机**，需要重新登录。
 - `unsafely-treat-insecure-origin-as-secure` **只能在启动时设置**，所以运行时新增 `http://` 主机后需重启客户端生效；`https://` 主机不受影响。
 - 明文 HTTP 链路上 dsh 的会话 cookie 不带 `Secure` 属性，跨网络部署建议配 HTTPS 反向代理。
-- 原生通知：**审批通知已真机验证可用**（选择器取自 dsh 上游组件源码，不依赖真机勘察）；**消息通知**（agent 回复完毕时提醒）另需真机确认，且只在窗口失焦时弹出。`MESSAGE_SELECTOR` 为 `null` 时该条规则不启用，功能只是不触发而非坏掉。若将来 dsh 上游改版导致选择器失效，可用 [`docs/dom-recon-script.js`](docs/dom-recon-script.js) 重新勘察 DOM 特征。
+- 原生通知：**审批通知与消息通知均已真机验证可用**（选择器取自 dsh 上游组件源码，不依赖真机勘察）；消息通知只在窗口**失焦**时弹出。`MESSAGE_SELECTOR` 为 `null` 时该条规则不启用，功能只是不触发而非坏掉。若将来 dsh 上游改版导致选择器失效，可用 [`docs/dom-recon-script.js`](docs/dom-recon-script.js) 重新勘察 DOM 特征。
 - 主机重命名已可用：「编辑(E)」→「编辑主机…」可改显示名、地址与 launch token。
 - **安装包未做代码签名**，最终用户首次运行会遇到 SmartScreen「未知发布者」提示（见下）。
 
