@@ -226,6 +226,17 @@ export function createTray(deps: TrayDeps): TrayHandle {
 
   refresh()
 
+  // 双击托盘图标 = 打开客户端。
+  //
+  // **必须显式注册**：Windows 上 Electron 不会给托盘图标任何默认点击行为，
+  // 不注册就是完全没反应——用户真机反馈的「双击托盘打不开」正是这个原因。
+  // `setContextMenu` 只管右键菜单，与左键无关，所以它在不在都不影响这里。
+  //
+  // 只绑双击、不绑单击：双击是 Windows 托盘应用的传统惯例，也正是用户预期的
+  // 那个动作；单击留给「手滑点到」，避免误触就把窗口拽到前台。
+  // 右键同理不绑——`setContextMenu` 已经接管，再绑 right-click 会两边打架。
+  tray.on('double-click', () => { deps.onOpen() })
+
   // 系统主题切换后立刻换色（用户改了 Windows 深色模式却要重启才生效是不能接受的）。
   // 托盘是本进程单例，监听器随进程存活，无需在退出时摘除。
   nativeTheme.on('updated', () => { refresh() })

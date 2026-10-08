@@ -98,4 +98,16 @@ describe('构建产物', () => {
     // 属性名由 selectors.ts 提供，最终必须出现在产物里（否则过滤会失效）。
     expect(host).toContain('data-streaming')
   })
+
+  it('托盘注册了双击事件，且接到「打开客户端」的动作上', async () => {
+    requireBuilt()
+    const main = await readFile(join(outDir, 'main', 'index.js'), 'utf8')
+    // Windows 上 Electron **不给托盘图标任何默认点击行为**：不注册 'double-click'
+    // 就是「双击毫无反应」。用户真机报过这个缺陷，而 tray.ts import 了 electron、
+    // 单测跑不起来（与上一条同理），所以按产物形态守一道。
+    expect(main).toContain('double-click')
+    // 光有事件名不算数——必须真把动作接上去。中间允许任意空白（构建输出的缩进
+    // 不是契约），但要求它紧跟在后面：隔得太远就说明挂的是别的东西。
+    expect(main).toMatch(/double-click[\s\S]{0,80}?onOpen\(\)/)
+  })
 })
