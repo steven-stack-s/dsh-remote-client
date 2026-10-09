@@ -122,6 +122,16 @@ describe('构建产物', () => {
     // 否则用户双击图标会「什么都不发生」——比开出多个窗口更让人困惑。
     expect(main).toContain('second-instance')
   })
+
+  it('主进程接线了自动更新（产物里必须有 autoUpdater）', async () => {
+    requireBuilt()
+    const main = await readFile(join(outDir, 'main', 'index.js'), 'utf8')
+    // 用户要求「后台下好再问我要不要重启」。更新器 import 了 electron，
+    // 单测覆盖不到，所以按产物形态守一道（与托盘双击、单实例锁同理）。
+    expect(main).toContain('autoUpdater')
+    // 只在打包版启用：开发模式下 electron-updater 会因缺 app-update.yml 报错。
+    expect(main).toContain('isPackaged')
+  })
 })
 
 /**

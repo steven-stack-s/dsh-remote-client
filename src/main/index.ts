@@ -17,6 +17,12 @@ import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
 import { parseThemeSource } from '../shared/desktop-shell.js'
 import { createNotifier, createQuietGate, parseNotifyRequest, type NotifyContext } from './notifications.js'
+import {
+  installUpdater,
+  updaterDeps,
+  RESTART_DIALOG_CONFIRM_ID,
+  RESTART_DIALOG_DEFAULT_ID,
+} from './updater.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 /**
@@ -371,6 +377,35 @@ function resetHostLoginState(host: HostEntry): void {
 }
 
 /**
+ * 询问用户「新版本已下载完成，现在重启安装吗？」。
+ *
+ * 由 `updater.ts` 在 `update-downloaded` 之后调用——**必须等下载完成再问**：
+ * 在 `update-available` 时就问，等于让用户对着一个还没开始下载的进度条等待。
+ *
+ * 默认按钮刻意设为「稍后」（与 `requestRemoveHost` 同一考虑）：用户可能正在
+ * 等一个长任务，误按回车绝不能把应用重启掉。
+ *
+ * 更新是**应用级**行为，与当前打开哪台主机无关，因此这里不需要窗口存在，
+ * `showMessageBox` 无窗口时也会正常显示（规格 §3.4(c)）。
+ *
+ * @param version - 已下载完成的版本号。
+ * @returns 用户是否选择了「立即重启」。
+ */
+async function promptRestart(version: string): Promise<boolean> {
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    buttons: ['立即重启', '稍后'],
+    defaultId: RESTART_DIALOG_DEFAULT_ID, // 默认「稍后」：回车不重启
+    cancelId: RESTART_DIALOG_DEFAULT_ID,  // Esc 亦视为「稍后」
+    title: '更新已就绪',
+    message: `新版本 ${version} 已下载完成，现在重启安装吗？`,
+    detail: '选择「稍后」也可以，下次启动时会再次检查。',
+    noLink: true,
+  })
+  return response === RESTART_DIALOG_CONFIRM_ID
+}
+
+/**
  * 装配托盘；只装配一次。失败被捕获并记录，绝不因此中断启动。
  *
  * 依赖与 `installAppMenuBar` 几乎同形，因为两者提供的是同一套主机管理动作。
@@ -488,6 +523,15 @@ async function boot(): Promise<void> {
     } catch (fallbackError) {
       console.error('[dsh-remote-client] 离线窗口亦无法打开：', fallbackError)
     }
+  } finally {
+    // 自动更新放在最后装配，且**在 try/catch 之外也照做**（finally 里）：
+    // 上面任何一步失败都不该让用户失去更新能力——恰恰相反，启动就出问题的
+    // 用户最需要能升到修复版。installUpdater 自己不抛（只在失败时记日志），
+    // 因此这里不需要再包一层 try。
+    //
+    // 只在打包版生效（`updaterDeps` 读 `app.isPackaged`），开发模式下
+    // electron-updater 会因缺 app-update.yml 报错。
+    installUpdater(updaterDeps(promptRestart))
   }
 }
 
