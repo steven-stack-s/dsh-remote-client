@@ -388,6 +388,34 @@ function resetHostLoginState(host: HostEntry): void {
  * 更新是**应用级**行为，与当前打开哪台主机无关，因此这里不需要窗口存在，
  * `showMessageBox` 无窗口时也会正常显示（规格 §3.4(c)）。
  *
+ * ## 为什么这里要手动置位 `quitting`（**没有它「立即重启」100% 失效**）
+ *
+ * spec §3.4(a) 与计划都写着「`quitAndInstall()` 内部走 `app.quit()`，会先触发
+ * `before-quit`，因此这条路径本就通」——**这个前提与 Electron 的实际行为相反**。
+ * 官方文档（app 的 `before-quit` 事件）明确写着：
+ *
+ * > If application quit was initiated by `autoUpdater.quitAndInstall()`, then
+ * > `before-quit` is emitted **after** emitting `close` event on all windows
+ * > and closing them.
+ *
+ * 我核对了 electron-updater 6.8.9 源码，确认这条文档不是空话：
+ * `BaseUpdater.quitAndInstall()` → `this.app.quit()` →
+ * `ElectronAppAdapter.quit()` 就是一句裸的 `app.quit()`，没有任何关闭窗口的预处理。
+ *
+ * 因此实际的时序是 `close` **先于** `before-quit`。而 `close` 到达
+ * `windows.ts` 的拦截时 `quitting` 仍是 `false`（`before-quit` 还没 emit），
+ * `shouldHideOnClose` 在非 darwin 平台对主机窗口一律返回 true → `preventDefault()`
+ * → **Electron 取消整个退出流程**。症状正是 spec 预言的「点了立即重启，窗口消失了
+ * 但版本没变」，而且是必然发生、不是偶发。窗口先被隐藏，然后退出被撤销，应用
+ * 变成一个还活着的幽灵进程。
+ *
+ * 这条路径只在打包版 + 真的下载完更新后才走到，单测与产物断言都够不着，所以
+ * 在这里显式置位是最直接的修法：让 `quitting` 在**安装退出发起之前**就为 true，
+ * 后续 `close` 自然放行（`before-quit` 稍后照常 emit，置位是幂等的）。
+ *
+ * 注意这与「注册顺序」无关——`before-quit` 确实早于更新器注册，但问题出在
+ * **触发顺序**上。只检查注册顺序是查不出这个缺陷的。
+ *
  * @param version - 已下载完成的版本号。
  * @returns 用户是否选择了「立即重启」。
  */
@@ -402,7 +430,12 @@ async function promptRestart(version: string): Promise<boolean> {
     detail: '选择「稍后」也可以，下次启动时会再次检查。',
     noLink: true,
   })
-  return response === RESTART_DIALOG_CONFIRM_ID
+
+  if (response !== RESTART_DIALOG_CONFIRM_ID) return false
+
+  // 必须在 quitAndInstall() 之前置位：它会先关窗，那时 close 拦截要靠这个值放行。
+  quitting = true
+  return true
 }
 
 /**

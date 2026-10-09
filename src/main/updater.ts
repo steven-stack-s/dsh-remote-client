@@ -20,6 +20,13 @@
  *    **绝不弹框**。用户没在等更新，打扰就是负收益；
  * 3. **不自动安装**——必须用户点「立即重启」才 `quitAndInstall()`；
  * 4. **同一版本只提示一次**——状态存 `userData/update-state.json`。
+ *
+ * ## 与「关窗驻留」的集成（规格 §3.4(a)）
+ *
+ * 规格说「`quitAndInstall()` 内部走 `app.quit()`，会先触发 `before-quit`，
+ * 因此这条路径本就通」——**该前提与 Electron 的实际行为相反**，详见
+ * {@link handleDownloaded}。这个缺陷只在打包版 + 真的下载完更新后才暴露，
+ * 单测与产物断言都够不着，因此修法与理由都写在了代码注释里。
  */
 
 import { app } from 'electron'
@@ -50,6 +57,11 @@ export interface UpdaterDeps {
   readonly dataDir: string
   /**
    * 询问用户「已下载完成，现在重启安装吗？」。
+   *
+   * **返回 `true` 时必须已经让应用进入「正在退出」状态**（`index.ts` 里即置位
+   * `quitting`）。原因见 {@link handleDownloaded} 里 `quitAndInstall()` 那段
+   * 说明：由更新器发起的退出，窗口 `close` 早于 `before-quit`，若不提前放行，
+   * 「关窗驻留」会把整个退出流程取消掉。
    *
    * @param version - 已下载好的版本号，用于文案。
    * @returns 用户是否选择立即重启；「稍后」或询问失败都是 `false`。
@@ -181,10 +193,19 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
 
     // 约束 3：到这一步才是用户明确要求安装。
     //
-    // 打通「关窗驻留」：本函数由 `update-downloaded` 触发，而那是**启动 30 秒后**
-    // 才可能发生的事，此时 `index.ts` 的模块级 `app.on('before-quit')` 早已注册
-    // （早于 `app.whenReady()`）。因此 `quitAndInstall()` 内部走 `app.quit()` 时，
-    // `quitting` 会被置位，窗口 `close` 拦截随之放行，退出不会被「隐藏到托盘」吞掉。
+    // ⚠️ `quitAndInstall()` 的退出时序**与直觉相反**，这里有个已修复过的陷阱：
+    // Electron 官方文档说得很明确——由 `quitAndInstall()` 发起的退出，
+    // `before-quit` 是在**所有窗口的 `close` 事件之后**才 emit 的（普通
+    // `app.quit()` 则相反）。而本应用的主机窗口 `close` 被拦截为「隐藏到托盘」，
+    // 只有 `quitting === true` 才放行。
+    //
+    // 所以若等到 `before-quit` 才置位 `quitting`，`close` 到达拦截时它还是 false
+    // → `preventDefault()` → **Electron 取消整个退出流程**，表现为「点了立即重启，
+    // 窗口消失了但版本没变」。
+    //
+    // 修法在调用方：`promptRestart` 返回 true 之前就已把 `quitting` 置位，因此这里
+    // 调用 `quitAndInstall()` 时放行条件已经满足。**这是 `promptRestart` 的契约
+    // 的一部分**——换实现时必须保持。
     autoUpdater.quitAndInstall()
   } catch (error) {
     // 约束 2：询问本身失败也不能弹框（弹框失败再弹一个框毫无意义）。
