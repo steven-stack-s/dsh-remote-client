@@ -89,10 +89,6 @@ pnpm dev         # 启动客户端（需要图形环境）
 
 安装向导支持自选安装位置、创建桌面与开始菜单快捷方式，**不需要管理员权限**（装到当前用户目录）。卸载时**保留**主机配置与登录态，重装后无需重新配置。
 
-> 📶 **下载很慢或下不动**：Release 的资源在国内直连经常失败。最快的办法是在原始
-> 链接前面拼一个加速代理（零配置，但公共代理会失效）；想长期稳定就自己部署一个
-> 转发 Worker，见 [**自建 GitHub 下载加速通道**](docs/gh-download-accelerator.zh-CN.md)。
-
 > ⚠️ 安装包**未做代码签名**，Windows SmartScreen 会提示「未知发布者」。
 > 点「更多信息」→「仍要运行」即可。若要消除该提示，需要购买代码签名证书，
 > 在 `electron-builder.yml` 里配置 `win.certificateFile` / `certificatePassword`。

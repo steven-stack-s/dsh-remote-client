@@ -93,11 +93,6 @@ Download `DSH Remote Client-<version>-setup.exe` and double-click to install.
 
 The setup wizard supports choosing the install location and creating desktop and Start Menu shortcuts, and **does not require administrator privileges** (it installs into the current user's directory). Uninstalling **keeps** the host configuration and login state, so no reconfiguration is needed after reinstalling.
 
-> 📶 **Downloads slow or failing?** Release assets are frequently unreachable from
-> mainland China. The quickest fix is prefixing the URL with a public accelerator
-> (zero setup, but public proxies die off); for something durable, deploy your own
-> forwarding Worker — see [**Self-hosted GitHub download accelerator**](docs/gh-download-accelerator.md).
-
 > ⚠️ The installer is **not code-signed**, so Windows SmartScreen will show "unknown publisher".
 > Click "More info" → "Run anyway". To get rid of that prompt you would need to buy a code-signing
 > certificate and configure `win.certificateFile` / `certificatePassword` in `electron-builder.yml`.
