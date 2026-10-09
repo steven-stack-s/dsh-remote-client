@@ -1,6 +1,4 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification } from 'electron'
-import { appendFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps, type TrayHandle } from './tray.js'
@@ -56,31 +54,6 @@ let tray: TrayHandle | undefined
 const APP_USER_MODEL_ID = 'com.stevenstack.dshremoteclient'
 
 /**
- * 【临时诊断】把通知链路的每一步追加到 `userData/notify-trace.log`。
- *
- * 背景：探针（手工注入 `data-streaming` 元素再移除属性）能弹出通知，但真实的
- * 「agent 回复结束」弹不出来。链路的前半段（DOM 变化 → 观察器 → IPC）与后半段
- * （fire → 判定 → 弹）都各自被验证过，所以断点必然藏在一个**只在真实场景下才
- * 不同**的环节里——而主进程是唯一能看到那一段的地方。
- *
- * 用**同步追加**：量极小（一次回复几行），同步写能让日志顺序与事件顺序严格一致，
- * 排查时序问题时这点比性能重要。
- *
- * **临时设施**：定位完成后连同埋点一起删除。写日志失败绝不能影响通知本身，
- * 所以整体包 try。
- *
- * @param step - 环节名（`ipc` / `pulse` / `fire` / `judge` / `shown` / `skip`）。
- * @param detail - 该环节的关键取值。
- */
-function traceNotify(step: string, detail: string): void {
-  try {
-    appendFileSync(join(dataDir, 'notify-trace.log'), `${new Date().toISOString()} ${step} ${detail}\n`)
-  } catch {
-    // 诊断日志失败不是主链路问题，忽略。
-  }
-}
-
-/**
  * 已创建但尚未关闭的通知对象。
  *
  * **必须持有引用**：Windows 上若 `Notification` 实例被垃圾回收，尚未真正显示
@@ -110,16 +83,13 @@ const notifier = createNotifier({
     const notification = new Notification(options)
     // 防 GC（见 liveNotifications 的说明）。
     liveNotifications.add(notification)
-    // 这三个事件是排查"调了 show() 却没出现"的唯一窗口：
-    //   show   = 系统确认显示成功
-    //   failed = show() 执行时出错（错误原因由 Electron 给出）
-    //   close  = 用户关掉或系统收起，此时才能安全释放引用
-    notification.on('show', () => { traceNotify('native', '系统已显示') })
-    notification.on('failed', (_event, error) => { traceNotify('native', `显示失败：${error}`) })
-    notification.on('close', () => {
-      liveNotifications.delete(notification)
-      traceNotify('native', '已关闭（引用已释放）')
+    // 显示失败是**真实异常**（比如系统禁用了通知），必须留下痕迹：用户报
+    // 「没收到通知」时，这是唯一能自证的线索。成功路径不记日志——那是噪音。
+    notification.on('failed', (_event, error) => {
+      console.error('[dsh-remote-client] 通知显示失败：', error)
     })
+    // 关闭后释放引用，避免长期持有。
+    notification.on('close', () => { liveNotifications.delete(notification) })
     return {
       show: () => { notification.show() },
       onClick: handler => { notification.on('click', handler) },
@@ -560,17 +530,9 @@ const quietGate = createQuietGate({
 })
 
 ipcMain.on('shell:notify', (event, raw: unknown) => {
-  const hostId = hostWebContentsId()
-  if (event.sender.id !== hostId) {
-    traceNotify('ipc', `sender 不匹配 sender=${String(event.sender.id)} host=${String(hostId)}`)
-    return
-  }
+  if (event.sender.id !== hostWebContentsId()) return
   const request = parseNotifyRequest(raw)
-  if (request === undefined) {
-    traceNotify('ipc', '负载非法，已丢弃')
-    return
-  }
-  traceNotify('ipc', `收到 urgent=${String(request.urgent)} titleLen=${String(request.title.length)}`)
+  if (request === undefined) return
 
   /**
    * 组装通知上下文。
@@ -590,27 +552,23 @@ ipcMain.on('shell:notify', (event, raw: unknown) => {
     onActivate: () => { currentWindow?.show() },
   })
 
-  const fire = (context: NotifyContext, via: string): void => {
-    traceNotify('fire', `via=${via} focused=${String(context.windowFocused)} urgent=${String(context.urgent)}`)
+  const fire = (context: NotifyContext): void => {
     try {
-      const shown = notifier.notify(context)
-      traceNotify('judge', `notifier.notify 返回 ${String(shown)}`)
+      notifier.notify(context)
     } catch (error) {
       // 通知失败绝不能牵连页面本身：它是锦上添花的能力，不是主链路。
-      traceNotify('skip', `抛错 ${error instanceof Error ? error.message : String(error)}`)
       console.error('[dsh-remote-client] 原生通知失败：', error)
     }
   }
 
   // 审批：立即判定并弹（无条件可见，不受静默期影响）。
   if (request.urgent) {
-    fire(buildContext(), 'immediate')
+    fire(buildContext())
     return
   }
 
   // 消息：起/重置静默期；到期时才取出**那一刻**的上下文做判定。
-  traceNotify('pulse', '起/重置静默期')
-  quietGate.pulse(() => { fire(buildContext(), 'quiet-elapsed') })
+  quietGate.pulse(() => { fire(buildContext()) })
 })
 
 ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
