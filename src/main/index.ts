@@ -81,6 +81,23 @@ function traceNotify(step: string, detail: string): void {
 }
 
 /**
+ * 已创建但尚未关闭的通知对象。
+ *
+ * **必须持有引用**：Windows 上若 `Notification` 实例被垃圾回收，尚未真正显示
+ * 出来的通知会**直接消失**（Electron 的已知行为）。而 `notify()` 里创建它的是
+ * 一个局部变量，函数一返回就没人引用了——GC 何时跑是**不确定的**，所以症状
+ * 恰好是"有时弹、有时不弹"：探针那次弹出来了，真实场景那次没有。
+ *
+ * 这是用户真机日志定位到的：`notifier.notify` 返回 `true`（说明 `show()` 确实
+ * 被调用了），但屏幕上什么都没有——逻辑层已无路可走，只可能是对象在显示前
+ * 就被回收了。
+ *
+ * 用进程级 Set 而不是单个变量：同时可能有多条通知（审批 + 消息）。在 `close`
+ * 事件里移除，避免长期持有。
+ */
+const liveNotifications = new Set<Notification>()
+
+/**
  * 原生通知器。
  *
  * 判定逻辑（去重、聚焦判定、文案）都在 `notifications.ts` 里，是可单测的纯逻辑；
@@ -91,6 +108,18 @@ const notifier = createNotifier({
   isSupported: () => Notification.isSupported(),
   create: options => {
     const notification = new Notification(options)
+    // 防 GC（见 liveNotifications 的说明）。
+    liveNotifications.add(notification)
+    // 这三个事件是排查"调了 show() 却没出现"的唯一窗口：
+    //   show   = 系统确认显示成功
+    //   failed = show() 执行时出错（错误原因由 Electron 给出）
+    //   close  = 用户关掉或系统收起，此时才能安全释放引用
+    notification.on('show', () => { traceNotify('native', '系统已显示') })
+    notification.on('failed', (_event, error) => { traceNotify('native', `显示失败：${error}`) })
+    notification.on('close', () => {
+      liveNotifications.delete(notification)
+      traceNotify('native', '已关闭（引用已释放）')
+    })
     return {
       show: () => { notification.show() },
       onClick: handler => { notification.on('click', handler) },
