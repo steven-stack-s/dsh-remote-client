@@ -110,4 +110,16 @@ describe('构建产物', () => {
     // 不是契约），但要求它紧跟在后面：隔得太远就说明挂的是别的东西。
     expect(main).toMatch(/double-click[\s\S]{0,80}?onOpen\(\)/)
   })
+
+  it('主进程请求了单实例锁（否则重复点图标会开出多个实例与多个托盘）', async () => {
+    requireBuilt()
+    const main = await readFile(join(outDir, 'main', 'index.js'), 'utf8')
+    // 用户真机反馈：多次点击桌面图标会打开多个实例、冒出多个托盘图标。
+    // Electron **不会**自动做单实例——必须显式 `requestSingleInstanceLock()`，
+    // 拿不到锁的那次要自行退出。这是启动路径上的代码，单测覆盖不到。
+    expect(main).toContain('requestSingleInstanceLock')
+    // 光退出还不够：已经在跑的那个实例必须响应后来者，把窗口唤起，
+    // 否则用户双击图标会「什么都不发生」——比开出多个窗口更让人困惑。
+    expect(main).toContain('second-instance')
+  })
 })

@@ -19,6 +19,27 @@ import { parseThemeSource } from '../shared/desktop-shell.js'
 import { createNotifier, createQuietGate, parseNotifyRequest, type NotifyContext } from './notifications.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
+/**
+ * 单实例锁：**一个用户桌面上只允许跑一个客户端**。
+ *
+ * 用户真机反馈「多次点击桌面图标会打开多个实例、冒出多个托盘」。Electron
+ * **不会**自动做这件事——不显式请求锁，每点一次图标就是一个全新进程，各自建窗口、
+ * 各自建托盘；而这些实例还会争抢同一份 `hosts.json` 与同一个 partition，
+ * 属于会真正损坏状态的冲突，不只是"多了几个图标"。
+ *
+ * 必须在 `app.whenReady()` **之前**调用，所以放在模块顶层（也是文件里最早的
+ * 可执行语句，先于读配置、注册 IPC 等一切副作用）。
+ *
+ * 拿不到锁时用 `app.exit()` 而不是 `app.quit()`：`quit()` 是**异步**的，会让下面
+ * 的模块级语句继续执行一遍——包括后面 `whenReady().then(boot)` 那条链，于是第二个
+ * 实例照样把托盘加上去，正是要修的症状。`exit()` 立即开始退出且不触发 before-quit。
+ * （顶层剩下的几条同步语句无害：只读配置与注册事件监听，进程随即消失。）
+ */
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) {
+  app.exit(0)
+}
+
 const dataDir = app.getPath('userData')
 
 // 安全上下文豁免必须在 app.whenReady() 之前设置，因此这里同步读配置。
@@ -420,6 +441,11 @@ function installShellChrome(): void {
 }
 
 async function boot(): Promise<void> {
+  // 双保险：没拿到单实例锁就什么都不做。上面的 `app.exit(0)` 已经会让进程退出，
+  // 但它是异步的——万一在它生效前 `whenReady` 就 resolve 了，这里能确保第二个
+  // 实例**不会**建托盘、开窗口、写配置文件（那正是「多个托盘」的来源）。
+  if (!hasSingleInstanceLock) return
+
   // Windows 上必须在 app.whenReady() 之后、发通知之前设置 AppUserModelID，
   // 否则系统原生通知**根本不显示**（静默失败，不报错也不抛异常）。
   // boot() 正是在 whenReady 之后被调用，这里是唯一且最早的时机。
@@ -730,6 +756,22 @@ ipcMain.handle('shell:restart', event => {
 // 标记真正退出：窗口 close 拦截据此放行，否则退出会被隐藏逻辑卡死。
 // 托盘「退出」与系统退出都会经过这里。
 app.on('before-quit', () => { quitting = true })
+
+/**
+ * 第二个实例被启动时（用户又点了一次桌面图标）。
+ *
+ * 光让后来者退出还不够：已经在跑的那个必须**响应**，否则用户双击图标会
+ * 「什么都没发生」——那比开出多个窗口更让人困惑（窗口明明在托盘里藏着，
+ * 用户却以为程序没启动）。这里复用托盘「打开客户端」的同一个入口
+ * （`openClient`：唤起已有窗口 / 按当前主机重开 / 没主机则开欢迎页），
+ * 不另造一套语义。
+ *
+ * 与 `hasSingleInstanceLock` 一样只在拿到锁的实例上注册——注册在第二个实例里
+ * 没有意义，它马上就要退出了。
+ */
+if (hasSingleInstanceLock) {
+  app.on('second-instance', () => { openClient() })
+}
 
 // boot() 内部已 try/catch，但这里仍补一个 catch：早先版本是裸的
 // `whenReady().then(boot)`，boot 里任何未捕获异常都会变成**静默的**
