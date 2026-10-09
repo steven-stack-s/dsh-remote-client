@@ -1,10 +1,14 @@
 {
   "name": "dsh-remote-client",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "description": "直载远端 dsh 的桌面客户端",
   "main": "out/main/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/steven-stack-s/dsh-remote-client.git"
+  },
   "scripts": {
     "test": "pnpm build && vitest run",
     "test:unit": "vitest run",

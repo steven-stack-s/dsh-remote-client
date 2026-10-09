@@ -41,6 +41,8 @@ This client does the opposite: **the backend always stays remote**. The window l
 - **Native notifications**: approval requests pop up **unconditionally** (they block your workflow); a message notification fires only once a reply has **genuinely stopped** and the window is unfocused.
 - **Tray**: host management and on/off both live here (on Windows the frameless window shows no menu bar — see Design highlights).
 - **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools.
+- **Automatic (differential) updates**: about 30 seconds after startup the client checks for a new version **in the background** and downloads only the parts that changed (no more re-downloading 106MB). Once the download finishes it asks exactly once — "Restart now" installs it, "Later" is not nagging and the same version is never asked about twice. All of it is silent: an unreachable network or a broken update source only leaves a log line, **never an error dialog**, and never affects normal use.
+  > ⚠️ **This requires the installed client to already be 0.1.7 or newer.** Versions 0.1.6 and earlier contain no updater, so they can only be upgraded by downloading the installer by hand — **that is the last time anyone has to install the 106MB package manually.**
 - **Windows installer**: ships its own Electron runtime, double-click to install, built by CI.
 
 ## Remote prerequisites (choose one)
@@ -97,6 +99,24 @@ The setup wizard supports choosing the install location and creating desktop and
 > Click "More info" → "Run anyway". To get rid of that prompt you would need to buy a code-signing
 > certificate and configure `win.certificateFile` / `certificatePassword` in `electron-builder.yml`.
 
+**About automatic updates**: from **0.1.7** onwards the client discovers new versions by itself and downloads only the changed parts, so later upgrades never need an installer again. But **this one still has to be installed by hand** — 0.1.6 and earlier have no updater, so they will not upgrade themselves.
+
+> **Nothing to do once installed.** The client checks for updates in the background about 30 seconds after startup and only shows a dialog once a download has completed. Choosing "Later" is fine: it will not nag you, and it will check again on the next launch.
+
+### Three files in the Release: you only need to download the exe
+
+Each release carries three files:
+
+| File | Who it is for | Download? |
+|---|---|---|
+| `DSH Remote Client-<version>-setup.exe` | The installer, **for people** | ✅ Yes |
+| `latest.yml` | For the updater: records the latest version | ❌ No — and **do not delete it** |
+| `DSH Remote Client-<version>-setup.exe.blockmap` | For the updater: a block index used to work out which blocks changed | ❌ No — and **do not delete it** |
+
+`latest.yml` tells an installed client "there is a new version, and here is what the new package is called"; the `.blockmap` tells it "these are the blocks that changed". With either one missing, automatic updates either stop working altogether or degrade into re-downloading the whole 106MB installer.
+
+> ⚠️ **Please do not delete `latest.yml` or the `.blockmap`.** They look like stray files, but they are two essential links in the update chain. For the same reason, do not clean up those two files on older releases either — older clients may still need them.
+
 ### Building the installer
 
 **Option 1: GitHub Actions (recommended, no local environment needed)**
@@ -118,4 +138,12 @@ See [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)
 
 This script codifies the four pitfalls actually hit when cross-building a Windows package on Linux (Node ≥ 22.12, wine is required, the binary tools must go through a mirror, `pnpm install --force` to fix the missing platform bindings) — see the script header for details. **Building natively on Windows does not need wine.**
 
-Artifact: `release/DSH Remote Client-<version>-setup.exe`.
+The artifacts land in `release/`:
+
+```
+release/DSH Remote Client-<version>-setup.exe          the installer (for users)
+release/DSH Remote Client-<version>-setup.exe.blockmap the differential block index (for the updater)
+release/latest.yml                                     the version manifest (for the updater)
+```
+
+The last two are produced because of the `publish` section in `electron-builder.yml`. **All three must be uploaded together when releasing**, otherwise installed clients either will not see the new version or can only re-download the whole package. (If you built locally just to test, you can ignore them.)

@@ -118,7 +118,7 @@ pnpm install
 | dsh's trust fence rejects non-loopback Hosts (the page opens but `/api` is all 403) | `127.0.0.1` is loopback, so it is **allowed straight through** — no need to configure `DSH_TRUSTED_HOSTS`, no need to install `dsh-remote` |
 | Plaintext HTTP is not a secure context (clipboard stops working) | `127.0.0.1` is a trusted origin as far as the browser is concerned, so it **is a secure context** and the clipboard works normally |
 
-Only when you need to access it via a **LAN IP or domain** do you have to deal with these two things (see §5).
+Only when you need to access it via a **LAN IP or domain** do you have to deal with these two things (see §6).
 
 > Docker Desktop maps container ports to Windows' `localhost` by default, so this path works out of the box.
 
@@ -331,7 +331,71 @@ The spec requires exponential-backoff retry (1s→2s→4s→8s→…→30s), whi
 
 ---
 
-## 5. LAN / remote access (optional, advanced)
+## 5. Automatic (differential) updates — ⚠️ requires v0.1.8 to be published first
+
+**This is the one section that cannot be run yet.** The reason is below.
+
+### 5.0 Why it cannot run yet: two releases are required
+
+Automatic updating verifies that an *old* client can fetch a *new* version, so it inherently needs two versions:
+
+| Version | Contents | Who installs it |
+|---|---|---|
+| **v0.1.7** | Ships the updater and `latest.yml` / `.blockmap` for the first time | Still a **manual install** (the last 106MB one) |
+| **v0.1.8** | Any small change | **Nobody** — an installed 0.1.7 should find it by itself |
+
+Therefore:
+
+- **Before v0.1.8 is published**, 0.1.7 can only be used to verify "it does not error and does not affect normal use" (§5.1). There is no target version to update to, so nothing happens — that is correct behaviour, not a defect.
+- **After v0.1.8 is published**, the full chain in §5.2 can be verified.
+
+### 5.1 Before v0.1.8: confirm it stays out of the way (do this now)
+
+These four checks can be run right now, and **any failure is a real defect**:
+
+| Action | Expected |
+|---|---|
+| Launch the client normally (installed package) | UI, tray and host connection are **exactly as before**, no different from 0.1.6 |
+| Launch it, then leave it idle for **1 minute** while watching | **No window or dialog ever appears** (including no pointless "you are up to date" notice) |
+| **Launch with the network down** (pull the cable / turn off Wi-Fi) | Still **no error dialog**. Only one line in the terminal/log: `[dsh-remote-client] 检查更新失败（已忽略，不影响使用）：…` |
+| Launch in `pnpm dev` development mode | Nothing pops up either. The updater **does not start at all in development mode** (there is no `app-update.yml`, and starting it would only spam error logs) — this is deliberate |
+
+> **Where to read the log**: a packaged build has no terminal window, so where `console.error` output goes depends on how you launch it. The easiest way is to start the installed exe from a command line (or press `Ctrl+Shift+I` first and watch the DevTools Console).
+
+### 5.2 After v0.1.8 is published: the full chain (this is the important part)
+
+**Precondition**: v0.1.8 has been published to a Release as a tag, and that Release **contains all three files** — `setup.exe`, `latest.yml` and `*.exe.blockmap` (see "Three files in the Release" in the README).
+
+Run these in order and **look at the result of every step**:
+
+| # | Action | Expected | What a failure means |
+|---|---|---|---|
+| 1 | Confirm you are running **0.1.7**, launch the client and wait about **30 seconds** | The log/Console shows an update check happening | The timer never fired |
+| 2 | Leave it running and wait for the background download to finish | A dialog appears: 「新版本 **0.1.8** 已下载完成，现在重启安装吗？」 with buttons 「立即重启」 / 「稍后」 | The quiet-period/policy logic swallowed the prompt |
+| 3 | **Record the actual number of bytes downloaded** (see below) | Clearly less than 106MB | Differential download did not take effect and it fell back to the whole package |
+| 4 | Click **「立即重启」 (Restart now)** | The app **really does exit**, installs briefly, **reopens by itself**, and the version is now **0.1.8** | ⚠️ See "Known trap" below |
+| 5 | Confirm the version after the restart | About box / window title / the version corresponding to `package.json` are all 0.1.8 | The install did not actually complete |
+| 6 | **Start a fresh round**: click 「稍后」 (Later) and do nothing else | The dialog closes with **no side effects at all** (window, tray and host connection all unchanged) | The update disturbed the main path |
+| 7 | Continuing from above: **fully quit the client and start it again**, then wait for another check | **It does not ask about 0.1.8 a second time** (the user has already answered) | The state was not remembered and the user gets nagged repeatedly |
+| 8 | After restarting, publish a **0.1.9** to the Release (if you are willing to test it) | It prompts **again**, for 0.1.9 | The state is remembered but is not reset when the version changes |
+
+**How to record the download size in step 3**: the only real evidence that differential download works is how much was actually transferred. The most direct way is to watch the process's received traffic during the download in a system resource monitor (Windows Task Manager → Performance → Ethernet); if you launched it from a command line you can read the updater output directly. **Write the number down** — it decides whether differential updates are worth keeping at all.
+
+**Why step 4 is the single most important item in this section**:
+
+> ⚠️ **Known trap (already fixed this round, see commit `11239d3`): for a quit initiated by `quitAndInstall()`, Electron emits `before-quit` *after* emitting `close` on all windows — the *opposite* of a normal `app.quit()`.**
+>
+> In this app the host window's `close` is intercepted as "hide to the tray", and only `quitting === true` lets it through. So if you set the flag only when `before-quit` fires, it is still `false` when `close` reaches the interceptor → `preventDefault()` → **Electron cancels the entire quit sequence**. The symptom is exactly "you clicked Restart now, the window disappeared, but the version did not change" — and it happens **every time, not intermittently**.
+>
+> The fix is to set `quitting` *before* calling `quitAndInstall()`, once the user has confirmed (this is part of the `UpdaterDeps.promptRestart` contract, and is commented in both `src/main/updater.ts` and `src/main/index.ts`).
+>
+> **For anyone changing this feature later**: this path is only reached in a packaged build *and* only when an update has genuinely finished downloading — **neither the unit tests nor the artifact assertions can reach it**. If you touch the quit flow, the window `close` interceptor, or the dialog plumbing, you must come back and re-run step 4. Please also read the comment on `handleDownloaded` in `src/main/updater.ts` while you are there.
+>
+> 📌 **Do not misremember this defect as a "registration order" problem.** An earlier draft of the design doc said to "confirm that `before-quit` is registered before the updater" — that is **the wrong question**: the registration order is correct by construction (`before-quit` is registered at module top level, while `installUpdater` only runs inside `boot()`), so checking it **can never find the problem**. The real variable is the **event firing order**, and the corresponding acceptance check is step 4.
+
+---
+
+## 6. LAN / remote access (optional, advanced)
 
 When you want to use a **LAN IP or domain** (not 127.0.0.1):
 
@@ -357,7 +421,7 @@ After adding `http://192.168.x.x:3080` for the first time, the welcome page show
 
 ---
 
-## 6. Known limitations (so you do not misjudge them as defects)
+## 7. Known limitations (so you do not misjudge them as defects)
 
 The following are **known by design**, not bugs:
 
@@ -368,10 +432,15 @@ The following are **known by design**, not bugs:
 - **A page that relies on the return value of `window.open` will error**: to make links open in the **current window** we must reject Electron's default "open a new window" behaviour, so `window.open()` returns `null`. If the page then uses that return value (e.g. `w.focus()`) it throws a JS error — the impact is limited to that page itself, and **the navigation has already been done by us**.
 - **One trade-off in link routing**: see §3.05 — if an icon points at **another** configured host, the current window loads it but the "current host" does not change.
 - **Unsigned app**: if you package an exe later, Windows Defender / SmartScreen may warn; running in `pnpm dev` development mode does not involve this.
+- **Automatic updates only work in a packaged build**: under `pnpm dev` the updater does not start at all (there is no `app-update.yml`, and starting it would only spam error logs). **So no update behaviour can be verified in development mode** — you must use the installer (see §5).
+- **Every failure in automatic updating is silent**: no network, an unreachable update source or a malformed `latest.yml` all leave just one line in the log and **never show a dialog**. This is deliberate (the user is not waiting for an update, so interrupting them is a net negative) — which means **"nothing happened" is usually correct behaviour**, so do not rush to report it as a defect. To tell whether it is running at all, go and read the log.
+- **Only prompting once is not forgetfulness**: once the user has been asked about a version, it is never asked again (the state lives in `userData/update-state.json`). If you want to see the dialog again, delete that file.
+- **Versions 0.1.6 and earlier do not auto-update**: there is no updater in them. They must be **manually upgraded to 0.1.7 once**, after which they are on the automatic update path.
+- **Uninstalling keeps `update-state.json`**: it is kept along with the other user data (uninstalling does not clear `userData`). The "already prompted version" therefore carries over after a reinstall, which is deliberate.
 
 ---
 
-## 7. Report template for problems
+## 8. Report template for problems
 
 ```
 【步骤】§3.1 关窗行为
@@ -394,7 +463,7 @@ The following are **known by design**, not bugs:
 
 ---
 
-## 8. Run the automated part first (can be done in parallel with GUI verification)
+## 9. Run the automated part first (can be done in parallel with GUI verification)
 
 Before GUI verification, confirm the automated part is green:
 
