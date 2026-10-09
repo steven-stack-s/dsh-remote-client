@@ -590,7 +590,8 @@ export function createHostWindow(
     void win.loadFile(OFFLINE_PAGE, {
       query: {
         detail: 'dsh 要求认证（401）。若该部署使用 launch token，'
-          + '请到「文件 → 添加主机…」重新粘贴 dsh web 打印的带 token 地址以更新令牌。',
+          + '请到托盘的「添加主机…」重新粘贴 dsh web 打印的带 token 地址以更新令牌'
+          + '（macOS / Linux 上该入口在菜单栏「编辑(E)」里）。',
       },
     })
   })

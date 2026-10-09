@@ -239,8 +239,9 @@ The client splits it into the origin (`http://127.0.0.1:3080`) and the token by 
 > ⚠️ **Copy the whole thing; do not hand-edit that token string.** The URL standard decodes `+` in the query as a space — if the token happens to contain `+`, hand-copying is very error-prone. Copy and paste is the most reliable.
 
 > ⚠️ **This token changes every time dsh restarts** (it is randomly generated when the process starts, and no configuration can pin it).
-> If you get a 401 again after a dsh restart, the client automatically **replays** the handshake once; if that still fails, use 「编辑(E) → 添加主机…」 (Edit(E) → Add Host…) to paste the **new** token-carrying address again
-> (re-adding the same address does not lose the saved login state — partitions are named after the origin).
+> If you get a 401 again after a dsh restart, the client automatically **replays** the handshake once; if that still fails, use the **tray's 「添加主机…」 (Add Host…)** to paste the **new** token-carrying address again
+> (on macOS / Linux that entry point is in the menu bar's 「编辑(E)」 (Edit); on Windows the menu bar is not shown, so the tray is the only way in.
+> Re-adding the same address does not lose the saved login state — partitions are named after the origin).
 
 ### 3.0 Addresses behind an SSO portal: after logging in you must manually 「重新加载」 (Reload)
 
