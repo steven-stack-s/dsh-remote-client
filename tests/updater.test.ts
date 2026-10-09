@@ -1,4 +1,5 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -17,9 +18,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
  * - `autoDownload` 必须被显式关掉（否则失败会走库那条无人 await 的分支，
  *   产生没有 `console.error` 的 unhandled rejection，违反「失败要留日志」）；
  * - `installUpdater` 幂等（`boot()` 可重入，重复注册会让一次事件触发多遍）；
- * - 同一版本并发只提示一次（重入占位）；
+ * - 重入占位既要**挡住并发**，又必须在流程结束后**释放**——只挡不释放会把同一
+ *   版本永久锁死（B2：用户点过「稍后」后该版本再也不问）；
  * - `beforeInstall` 在 `quitAndInstall()` **之前**被调用（否则「立即重启」
  *   会被「关窗驻留」吞掉——详见 `updater.ts` 里那段说明）。
+ *
+ * ## `vi.mock` 的使用边界（**本项目首次出现，后来者请先读这一段**）
+ *
+ * 本项目的主线分层是「**能抽成纯逻辑的一律抽出来单测，只把与 electron 的耦合
+ * 留在最外圈**」（见 spec §3.5，以及 `notifications.ts` / `backoff.ts` /
+ * `lifecycle.ts` / `update-policy.ts` / `update-state.ts` 的做法）。
+ *
+ * 本文件用 `vi.mock` 是**不得已**，且仅限一种情形：
+ *
+ * > **模块顶层就 `import ... from 'electron'`，而依赖注入无法解决顶层 import。**
+ *
+ * `updater.ts` 正是如此——它顶层 `import { app } from 'electron'` 与
+ * `import { autoUpdater } from 'electron-updater'`，没有任何接缝能绕过。
+ *
+ * ⚠️ **禁令：能被抽成纯函数的「决策」，一律抽到 `update-policy.ts` 那一类模块里测，
+ * 不要用 `vi.mock` 在这里补。** 本文件只用来验证**接线**——事件监听、调用顺序、
+ * 开关设置、幂等与重入——不用来验证决策。判据很简单：
+ *
+ * - 「该不该提示 / 该不该下载 / 文案怎么拼」→ 纯函数，去 `*-policy.ts` 测；
+ * - 「谁在什么时候被调用、调用几次、以什么顺序」→ 接线，才轮到本文件的 `vi.mock`。
  *
  * 注意：纯决策逻辑（`shouldPromptForUpdate`）与状态持久化
  * （`readPromptedVersion` / `writePromptedVersion`）各有自己的测试文件，
@@ -188,6 +210,129 @@ describe('更新器接线', () => {
     await Promise.all([fireDownloaded('2.0.0'), fireDownloaded('2.0.1')])
 
     expect(dialogs).toBe(2)
+  })
+
+  /**
+   * I5-1：**顺序**(非并发)两次触发同一版本。
+   *
+   * 上面两条并发用例**无法区分**「占位正常释放」与「占位永久残留」——两种实现在
+   * 并发场景下表现完全一致。B2 正是因此从全绿里漏了过去。这条才真正分开它们。
+   *
+   * 为了让归因钉死在**占位**上而不是状态文件上，第二次触发前先删掉
+   * `update-state.json`：若占位已正确释放，就会重新走完整流程（重新询问、重新
+   * 写盘）；若占位残留，则会在读盘之前就被挡回，且事后状态文件仍不存在。
+   */
+  it('顺序两次触发同一版本：占位释放后会重新询问（B2 回归）', async () => {
+    const mod = await freshModule()
+    let dialogs = 0
+    const dataDir = await install(mod, {
+      promptRestart: async () => {
+        dialogs++
+        return false // 用户点「稍后」
+      },
+    })
+    const stateFile = join(dataDir, 'update-state.json')
+
+    await fireDownloaded('1.0.0')
+    expect(dialogs).toBe(1)
+    expect(existsSync(stateFile)).toBe(true)
+
+    // 删掉状态文件：排除「是状态文件在拦」这个归因，只留下占位这一个解释。
+    await rm(stateFile, { force: true })
+
+    await fireDownloaded('1.0.0')
+
+    // 释放后重新走完整流程。永久残留的实现这里会停在 1。
+    expect(dialogs).toBe(2)
+    // 且确实走到了写盘（残留的实现根本到不了这一步）。
+    expect(existsSync(stateFile)).toBe(true)
+  })
+
+  it('状态文件仍在时会挡住重复询问（「同一版本只提示一次」的正主是它）', async () => {
+    const mod = await freshModule()
+    let dialogs = 0
+    await install(mod, {
+      promptRestart: async () => {
+        dialogs++
+        return false
+      },
+    })
+
+    // 两次都保留状态文件：第二次应由 shouldPromptForUpdate 判定为「已提示过」而跳过。
+    await fireDownloaded('1.5.0')
+    await fireDownloaded('1.5.0')
+
+    expect(dialogs).toBe(1)
+  })
+
+  /**
+   * I5-2：判定不通过那条 early return 也必须释放占位。
+   *
+   * 先让状态文件里记着「1.6.0 已提示过」，触发时 `shouldPromptForUpdate` 返回 false
+   * 直接 `return`——这条路径最容易漏掉清理。随后删掉状态文件再触发：若那条
+   * `return` 释放了占位，这次就该重新询问。
+   */
+  it('判定不通过（已提示过）提前返回时，占位同样被释放', async () => {
+    const mod = await freshModule()
+    let dialogs = 0
+    const dataDir = await install(mod, {
+      promptRestart: async () => {
+        dialogs++
+        return false
+      },
+    })
+    const stateFile = join(dataDir, 'update-state.json')
+
+    // 预置「已提示过 1.6.0」，让第一次触发走 early return。
+    await writeFile(stateFile, '{"promptedVersion":"1.6.0"}\n', 'utf8')
+
+    await fireDownloaded('1.6.0')
+    expect(dialogs).toBe(0) // 已提示过，不弹
+
+    // 抹掉记录：若 early return 没释放占位，这里仍会被挡在 has() 上。
+    await rm(stateFile, { force: true })
+    await fireDownloaded('1.6.0')
+
+    expect(dialogs).toBe(1)
+  })
+
+  /**
+   * I5-3：写状态失败时的行为（spec §3.3 约束 2 的核心路径）。
+   *
+   * 「先写状态、再弹框」——写盘失败绝不能中断更新：只记日志，**仍然询问**。
+   * 让状态目录不可写即可制造失败（用只读目录更稳，这里用一个「路径被文件占住」
+   * 的目录名，`mkdir` 会直接失败）。
+   */
+  it('写状态失败时：仍继续询问，且不因失败而放弃更新', async () => {
+    const mod = await freshModule()
+    let dialogs = 0
+
+    // dataDir 指向一个**普通文件**：writePromptedVersion 里的 mkdir 必然失败。
+    const blocked = join(await mkdtemp(join(tmpdir(), 'dsh-updater-')), 'not-a-dir')
+    await writeFile(blocked, 'occupied', 'utf8')
+
+    const errors: unknown[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args[0])
+    })
+
+    mod.installUpdater({
+      isPackaged: true,
+      dataDir: blocked,
+      promptRestart: async () => {
+        dialogs++
+        return false
+      },
+      beforeInstall: () => {},
+    })
+
+    await fireDownloaded('1.7.0')
+    spy.mockRestore()
+
+    // 关键：写盘失败不该让用户失去这次询问。
+    expect(dialogs).toBe(1)
+    // 且失败必须留下日志（约束 2 是「静默」而非「无声」）。
+    expect(errors.some(message => String(message).includes('更新状态写入失败'))).toBe(true)
   })
 
   it('点「立即重启」时 beforeInstall 先于 quitAndInstall', async () => {

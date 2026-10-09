@@ -106,7 +106,7 @@ function logError(message: string, error: unknown): void {
 let installed = false
 
 /**
- * 已经进入「询问是否重启」流程的版本号。
+ * **正在进行中**的「询问是否重启」流程所对应的版本号。
  *
  * **重入占位**（I3）。{@link handleDownloaded} 从读状态到弹框之间全是 await 让点
  * （读盘 → 判定 → 写盘 → 弹框），若只有 I2 的守卫而没有这一层，两条并发的
@@ -115,6 +115,19 @@ let installed = false
  *
  * 在第一次 `readPromptedVersion` **之前**就占位（而不是写盘之后），因为让点从
  * 读盘就已经存在。用 `Set` 而不是单个布尔：不同版本号应当能各自走一遍。
+ *
+ * ## 这个 Set **只负责进程内并发去重**，不是「已提示过」的记录（B2 的教训）
+ *
+ * 别把它的语义扩大到「记住提示过谁」——那是 `update-state.json` 的职责，且必须
+ * 跨进程存活。本 Set 的生命周期严格等于**一次询问过程**：进入时 `add`，退出时
+ * 由 `finally` `delete`（见 {@link handleDownloaded}）。
+ *
+ * 曾经漏掉那个 `delete`，后果比它要修的问题严重得多：占位与进程同寿，于是用户
+ * 点过「稍后」之后，**同一版本在本次进程剩余的整个生命周期里再也不会被询问**
+ * ——常驻托盘时就是「更新永远装不上」。而「每个版本号只提示一次」的正确载体是
+ * 持久化的 `update-state.json`。
+ *
+ * 判据：**占位必须活到流程结束，但绝不能活过流程结束。**
  */
 const prompting = new Set<string>()
 
@@ -238,6 +251,9 @@ async function checkNow(): Promise<void> {
 async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<void> {
   // I3：先占位再读盘。让点从第一次 await 就存在，因此占位必须在这里、而不是
   // 判定之后——否则两条并发调用会各自读到「未提示过」然后弹两个框。
+  //
+  // 并发为什么仍被挡住：第二条调用走到这里时，第一条还没执行到 `finally` 的
+  // `delete`（它卡在某个 await 上），因此 `has()` 命中并直接返回。
   if (prompting.has(version)) return
   prompting.add(version)
 
@@ -248,7 +264,10 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
 
     // 先记状态再问：用户点「立即重启」后进程马上就要退出，那时再写盘可能来不及。
     // 反过来说，如果用户其实是点了「稍后」，状态也已经写好了——这正是我们要的语义。
-    // 写失败只记日志：记不住状态最坏是下次多问一遍，不该因此中断更新。
+    //
+    // 写失败只记日志、**不中断流程**（约束 2：记不住状态不该让更新失败）。注意
+    // 释放占位后若再次触发会**重新询问**，这是刻意的——状态没记住就该重问，
+    // 而不是像 B2 那样永久闭嘴。
     try {
       await writePromptedVersion(deps.dataDir, version)
     } catch (error) {
@@ -278,6 +297,18 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
   } catch (error) {
     // 约束 2：询问本身失败也不能弹框（弹框失败再弹一个框毫无意义）。
     logError('更新提示失败（已忽略，不影响使用）：', error)
+  } finally {
+    // **必须释放占位**（B2）。上面的 `return` 有很多条（判定不通过、用户点稍后、
+    // 安装完成、以及任何抛出），只有 `finally` 能保证每条路径都清理。
+    //
+    // 漏掉它时占位会与进程同寿：用户点过「稍后」之后，同一版本在本次进程剩余的
+    // 全部生命周期内再也不会被询问——常驻托盘时就是「更新永远装不上」。
+    // 注意这个 Set 只做**进程内并发去重**，「每个版本号只提示一次」由持久化的
+    // `update-state.json` 负责（见 `prompting` 的说明）。
+    //
+    // 放在 `finally` 而不是各 `return` 之前：`quitAndInstall()` 之后进程即将退出，
+    // 补一句清理既不必要也容易漏；统一在 `finally` 收口更不容易被后续改动破坏。
+    prompting.delete(version)
   }
 }
 
