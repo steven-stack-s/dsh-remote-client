@@ -388,10 +388,34 @@ function resetHostLoginState(host: HostEntry): void {
  * 更新是**应用级**行为，与当前打开哪台主机无关，因此这里不需要窗口存在，
  * `showMessageBox` 无窗口时也会正常显示（规格 §3.4(c)）。
  *
- * ## 为什么这里要手动置位 `quitting`（**没有它「立即重启」100% 失效**）
+ * 注意：这里**不再**负责置位 `quitting`。那件事改由下面 `markQuittingForUpdate`
+ * 承担——原因见它的说明（要让类型系统强制它发生，而不是靠本函数的注释维系）。
+ *
+ * @param version - 已下载完成的版本号。
+ * @returns 用户是否选择了「立即重启」。
+ */
+async function promptRestart(version: string): Promise<boolean> {
+  const { response } = await dialog.showMessageBox({
+    type: 'info',
+    buttons: ['立即重启', '稍后'],
+    defaultId: RESTART_DIALOG_DEFAULT_ID, // 默认「稍后」：回车不重启
+    cancelId: RESTART_DIALOG_DEFAULT_ID,  // Esc 亦视为「稍后」
+    title: '更新已就绪',
+    message: `新版本 ${version} 已下载完成，现在重启安装吗？`,
+    detail: '选择「稍后」也可以，下次启动时会再次检查。',
+    noLink: true,
+  })
+  return response === RESTART_DIALOG_CONFIRM_ID
+}
+
+/**
+ * 安装更新前的收尾：把应用标记为「正在退出」。
+ *
+ * 由 `updater.ts` 在 `quitAndInstall()` **之前**调用（作为 `UpdaterDeps.beforeInstall`
+ * 传入）。这一步是必须的，否则「立即重启」100% 失效：
  *
  * spec §3.4(a) 与计划都写着「`quitAndInstall()` 内部走 `app.quit()`，会先触发
- * `before-quit`，因此这条路径本就通」——**这个前提与 Electron 的实际行为相反**。
+ * `before-quit`，因此这条路径本就通」——**该前提与 Electron 的实际行为相反**。
  * 官方文档（app 的 `before-quit` 事件）明确写着：
  *
  * > If application quit was initiated by `autoUpdater.quitAndInstall()`, then
@@ -415,27 +439,9 @@ function resetHostLoginState(host: HostEntry): void {
  *
  * 注意这与「注册顺序」无关——`before-quit` 确实早于更新器注册，但问题出在
  * **触发顺序**上。只检查注册顺序是查不出这个缺陷的。
- *
- * @param version - 已下载完成的版本号。
- * @returns 用户是否选择了「立即重启」。
  */
-async function promptRestart(version: string): Promise<boolean> {
-  const { response } = await dialog.showMessageBox({
-    type: 'info',
-    buttons: ['立即重启', '稍后'],
-    defaultId: RESTART_DIALOG_DEFAULT_ID, // 默认「稍后」：回车不重启
-    cancelId: RESTART_DIALOG_DEFAULT_ID,  // Esc 亦视为「稍后」
-    title: '更新已就绪',
-    message: `新版本 ${version} 已下载完成，现在重启安装吗？`,
-    detail: '选择「稍后」也可以，下次启动时会再次检查。',
-    noLink: true,
-  })
-
-  if (response !== RESTART_DIALOG_CONFIRM_ID) return false
-
-  // 必须在 quitAndInstall() 之前置位：它会先关窗，那时 close 拦截要靠这个值放行。
+function markQuittingForUpdate(): void {
   quitting = true
-  return true
 }
 
 /**
@@ -564,7 +570,15 @@ async function boot(): Promise<void> {
     //
     // 只在打包版生效（`updaterDeps` 读 `app.isPackaged`），开发模式下
     // electron-updater 会因缺 app-update.yml 报错。
-    installUpdater(updaterDeps(promptRestart))
+    //
+    // `beforeInstall` 必须是**必填**的：它负责在 `quitAndInstall()` 之前置位
+    // `quitting`，漏掉就会让「立即重启」被关窗拦截吞掉（详见
+    // `markQuittingForUpdate` 的说明）。`UpdaterDeps` 把它声明成必填字段，
+    // 因此这里少传一个会直接编译失败，而不是等到真机才发现。
+    installUpdater(updaterDeps({
+      promptRestart,
+      beforeInstall: markQuittingForUpdate,
+    }))
   }
 }
 

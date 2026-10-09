@@ -58,15 +58,27 @@ export interface UpdaterDeps {
   /**
    * 询问用户「已下载完成，现在重启安装吗？」。
    *
-   * **返回 `true` 时必须已经让应用进入「正在退出」状态**（`index.ts` 里即置位
-   * `quitting`）。原因见 {@link handleDownloaded} 里 `quitAndInstall()` 那段
-   * 说明：由更新器发起的退出，窗口 `close` 早于 `before-quit`，若不提前放行，
-   * 「关窗驻留」会把整个退出流程取消掉。
-   *
    * @param version - 已下载好的版本号，用于文案。
    * @returns 用户是否选择立即重启；「稍后」或询问失败都是 `false`。
    */
   readonly promptRestart: (version: string) => Promise<boolean>
+  /**
+   * 安装前的收尾钩子，**在 `quitAndInstall()` 之前调用**。
+   *
+   * 存在理由见 {@link handleDownloaded} 里 `quitAndInstall()` 那段说明：由更新器
+   * 发起的退出，窗口 `close` 早于 `before-quit`（Electron 官方文档明确说明），
+   * 而主机窗口的 `close` 被拦截为「隐藏到托盘」，只有 `quitting === true` 才放行。
+   * 因此必须在调用 `quitAndInstall()` **之前**让应用进入「正在退出」状态，否则
+   * `preventDefault()` 会让 Electron 取消整个退出流程（表现为「点了立即重启，
+   * 窗口消失了但版本没变」）。
+   *
+   * 之所以做成必须提供的回调而不是继续写在 `promptRestart` 的注释里：那是**类型上
+   * 表达不出来**的隐式契约，换一个 `promptRestart` 实现极易漏掉——本项正是因为
+   * 漏掉它而变成过一个 B 级缺陷。放进 `UpdaterDeps` 后，少做这一步会直接编译失败。
+   *
+   * 实现方（`index.ts`）在这里置位 `quitting`；调用时机由本模块保证。
+   */
+  readonly beforeInstall: () => void
 }
 
 /**
@@ -80,6 +92,33 @@ function logError(message: string, error: unknown): void {
 }
 
 /**
+ * 装配是否已完成。**幂等守卫**（I2）。
+ *
+ * `installUpdater` 唯一的调用方是 `boot()`，而 `boot()` 是可重入的：macOS 上
+ * `activate`（点 Dock 图标）在「窗口都关掉了」时会再调一次 `boot()`。没有这个
+ * 标志的话，`autoUpdater.on(...)` 会被再注册一份——一次 `update-downloaded` 会
+ * 触发两遍 {@link handleDownloaded}（进而可能弹出两个对话框），并多出一个
+ * `setInterval` 与一个 `setTimeout`（旧的那个没有 `clear`，也拿不到句柄）。
+ *
+ * 直接守卫「注册」这个动作，而不是守卫 `boot()`：需要幂等的是注册，`boot()` 里
+ * 其余步骤（如重开窗口）本就该能重复执行。
+ */
+let installed = false
+
+/**
+ * 已经进入「询问是否重启」流程的版本号。
+ *
+ * **重入占位**（I3）。{@link handleDownloaded} 从读状态到弹框之间全是 await 让点
+ * （读盘 → 判定 → 写盘 → 弹框），若只有 I2 的守卫而没有这一层，两条并发的
+ * `handleDownloaded` 可以在**都读到「未提示过」之后**各自走到弹框，弹出两个一模一样的
+ * 对话框——那正是 spec §3.3 约束 4 要防的体验。
+ *
+ * 在第一次 `readPromptedVersion` **之前**就占位（而不是写盘之后），因为让点从
+ * 读盘就已经存在。用 `Set` 而不是单个布尔：不同版本号应当能各自走一遍。
+ */
+const prompting = new Set<string>()
+
+/**
  * 装配自动更新。**启动期只做一件事：定时器**，真正的检查在 30 秒之后。
  *
  * 全部失败路径都只记日志、绝不抛出：更新是锦上添花的能力，它挂掉绝不能
@@ -90,6 +129,11 @@ function logError(message: string, error: unknown): void {
 export function installUpdater(deps: UpdaterDeps): void {
   // 约束 1：开发模式下 electron-updater 会因缺 app-update.yml 报错。
   if (!deps.isPackaged) return
+
+  // I2：幂等。boot() 可重入（macOS 的 activate 路径），重复注册会让一次
+  // update-downloaded 触发两遍处理、并多出重复的定时器。
+  if (installed) return
+  installed = true
 
   try {
     // electron-updater 默认自带一个往 stdout 刷的日志器。这里关掉它，改用
@@ -106,9 +150,27 @@ export function installUpdater(deps: UpdaterDeps): void {
     // 顺序是 checkForUpdates() → update-available → downloadUpdate()
     //      → update-downloaded → 询问。
     //
-    // 刻意**不用** `autoDownload = true` 的默认值：那样下载由库内部发起，我们就
-    // 失去了「下载失败时静默、不弹框」的控制点。手动接这一步，链路上每个环节都
-    // 在自己手里。
+    // **必须显式关掉 `autoDownload`**（库默认 true）。它不是可有可无的开关，
+    // 关掉它才让「下载由我们发起、失败由我们记日志」真正成立。库里的时序是：
+    //
+    //   AppUpdater.js:414  this.onUpdateAvailable(updateInfo)
+    //   AppUpdater.js:429    └─ this.emit("update-available", …)   ← 同步回调我们
+    //   AppUpdater.js:422  downloadPromise: this.autoDownload ? this.downloadUpdate(…) : null
+    //
+    // 注意 422 在 429 **之后**才求值。而 `downloadPromise` 直到
+    // `downloadUpdate()` 内部（L461）才被赋值，所以我们的 handler 在 emit 里调用
+    // `downloadUpdate()` 时读到的 `downloadPromise` 还是 null → **真正启动下载的是
+    // 我们这一次调用**；随后 L422 的调用撞上 L442 的 `if (this.downloadPromise != null)`
+    // 被去重。
+    //
+    // 也就是说：不改这一行，下载**表面上照跑**，但我们其实是靠时序巧合在赢——
+    // 而且库在 L422 那条分支上的 rejection 走 `.catch(e => { throw errorHandler(e) })`
+    // 且**无人 await**（L416 的 `//noinspection ES6MissingAwait`），一旦下载失败，
+    // 它会产生一个**不经过我们 `console.error`** 的 unhandled rejection，
+    // 违反 spec §3.3 约束 2「任何失败都静默**且留日志**」。置为 false 后 L422 恒为
+    // null，链路上只剩我们这一个可观测的失败出口。
+    autoUpdater.autoDownload = false
+
     autoUpdater.on('update-available', () => {
       // 这里**只下载，不询问**：此刻还没有下载，问用户等于逼他等着下载完成。
       void autoUpdater.downloadUpdate().catch(error => {
@@ -174,6 +236,11 @@ async function checkNow(): Promise<void> {
  * @param version - 已下载完成的版本号。
  */
 async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<void> {
+  // I3：先占位再读盘。让点从第一次 await 就存在，因此占位必须在这里、而不是
+  // 判定之后——否则两条并发调用会各自读到「未提示过」然后弹两个框。
+  if (prompting.has(version)) return
+  prompting.add(version)
+
   try {
     const promptedVersion = await readPromptedVersion(deps.dataDir)
     // 决策交给纯函数（有单测），这里只执行。
@@ -193,7 +260,7 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
 
     // 约束 3：到这一步才是用户明确要求安装。
     //
-    // ⚠️ `quitAndInstall()` 的退出时序**与直觉相反**，这里有个已修复过的陷阱：
+    // ⚠️ `quitAndInstall()` 的退出时序**与直觉相反**：
     // Electron 官方文档说得很明确——由 `quitAndInstall()` 发起的退出，
     // `before-quit` 是在**所有窗口的 `close` 事件之后**才 emit 的（普通
     // `app.quit()` 则相反）。而本应用的主机窗口 `close` 被拦截为「隐藏到托盘」，
@@ -203,9 +270,10 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
     // → `preventDefault()` → **Electron 取消整个退出流程**，表现为「点了立即重启，
     // 窗口消失了但版本没变」。
     //
-    // 修法在调用方：`promptRestart` 返回 true 之前就已把 `quitting` 置位，因此这里
-    // 调用 `quitAndInstall()` 时放行条件已经满足。**这是 `promptRestart` 的契约
-    // 的一部分**——换实现时必须保持。
+    // 因此必须在下面这行之前调用 `deps.beforeInstall()`。它由 `index.ts` 提供
+    // （置位 `quitting`），且是 `UpdaterDeps` 的**必填**字段——类型系统会强制
+    // 每个调用方提供，不再是只靠注释维系的隐式契约。
+    deps.beforeInstall()
     autoUpdater.quitAndInstall()
   } catch (error) {
     // 约束 2：询问本身失败也不能弹框（弹框失败再弹一个框毫无意义）。
@@ -236,13 +304,17 @@ export const RESTART_DIALOG_CONFIRM_ID = 0
  * `app.getPath('userData')` 这两个取值——它们都是「约束 1」的判据，散落多处
  * 就容易出现「一处加了门、另一处没加」。
  *
- * @param promptRestart - 询问用户是否立即重启。
+ * @param deps - 由调用方提供的两个回调：询问是否重启、安装前收尾。
  * @returns 组装好的依赖。
  */
-export function updaterDeps(promptRestart: UpdaterDeps['promptRestart']): UpdaterDeps {
+export function updaterDeps(deps: {
+  promptRestart: UpdaterDeps['promptRestart']
+  beforeInstall: UpdaterDeps['beforeInstall']
+}): UpdaterDeps {
   return {
     isPackaged: app.isPackaged,
     dataDir: app.getPath('userData'),
-    promptRestart,
+    promptRestart: deps.promptRestart,
+    beforeInstall: deps.beforeInstall,
   }
 }
