@@ -9,6 +9,16 @@ appId: com.stevenstack.dshremoteclient
 productName: DSH Remote Client
 copyright: MIT Licensed
 
+# 差分更新的元数据来源：声明之后，构建会额外产出 latest.yml（版本清单）
+# 与 *.exe.blockmap（块索引）。更新器靠前者判断有没有新版，靠后者算出要下哪几块。
+#
+# ⚠️ 加了这一段之后，CI 里的 `electron-builder` **必须继续带 `--publish never`**
+#    （现有命令已经是），否则它会自己往 Release 推一份，与 action-gh-release 打架。
+publish:
+  provider: github
+  owner: steven-stack-s
+  repo: dsh-remote-client
+
 directories:
   buildResources: build
   output: release

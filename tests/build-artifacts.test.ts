@@ -123,3 +123,36 @@ describe('构建产物', () => {
     expect(main).toContain('second-instance')
   })
 })
+
+/**
+ * 打包配置与 CI 产物断言。
+ *
+ * 这两条读的是**源码配置**而非 out/ 产物，所以不需要 requireBuilt()：构建配置
+ * 本身就是「更新链路有没有接通」的契约。背景是差分更新需要三样东西同时在
+ * Release 里——latest.yml 告诉更新器「有没有新版」、.exe 是下载目标、
+ * .blockmap 才能只下差异块。少任何一样，更新要么发现不了、要么退化成全量。
+ *
+ * 之所以能在单测里守住：打包配置是静态文件，而「配了但 CI 没上传」这类问题
+ * 只有等真机更新失败时才会暴露，那时代价是用户装不上新版本。
+ */
+describe('差分更新产物', () => {
+  it('打包配置声明了 GitHub publish（差分更新元数据的来源）', async () => {
+    const config = await readFile(join(root, 'electron-builder.yml'), 'utf8')
+    // 没有 publish 段，构建就不产出 latest.yml，更新器无从知道"有没有新版"。
+    // owner / repo 按 electron-builder 的标准写法分成两行匹配（计划初稿里
+    // 写成 `owner/repo` 合并式是笔误，YAML 里从来不是那个形状）。
+    expect(config).toContain('publish:')
+    expect(config).toContain('provider: github')
+    expect(config).toContain('owner: steven-stack-s')
+    expect(config).toContain('repo: dsh-remote-client')
+  })
+
+  it('CI 把 blockmap 与 latest.yml 一并上传（否则更新链路断在半路）', async () => {
+    const ci = await readFile(join(root, '.github', 'workflows', 'build-windows.yml'), 'utf8')
+    // 更新器要三样齐全：latest.yml 找版本、.exe 是目标、.blockmap 才能差分。
+    expect(ci).toContain('*.blockmap')
+    expect(ci).toContain('latest.yml')
+    // 出现过两次：Artifacts 一次、Release 一次。少任何一处都会让对应通道失效。
+    expect(ci.match(/latest\.yml/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+  })
+})

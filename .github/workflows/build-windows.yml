@@ -134,7 +134,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-installer
-          path: release/*.exe
+          # 三样都要传：exe 是给用户的安装包，latest.yml 与 .blockmap 是更新器
+          # 用的元数据——只在 Artifacts 里少了它们，差分更新会在下一版发布时
+          # 静默退化成全量下载（或直接发现不了新版）。
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
           if-no-files-found: error
           # 安装包约 106MB，且 main 每次推送都会产出。设自动过期避免
           # 无限累积占用仓库的 Artifacts 配额；够取用即可。
@@ -144,7 +150,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*.exe
+          # 与 Artifacts 同步：三样齐全，更新器才拿得到版本清单与块索引。
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
           generate_release_notes: true
           body: |
             ## 安装
@@ -152,6 +162,11 @@ jobs:
             下载下面的 `DSH Remote Client-*-setup.exe`，双击安装即可。
 
             **不需要安装 Node、pnpm 或任何运行环境** —— Electron 运行时已打进安装包。
+
+            > 📦 本次发布还包含 `latest.yml` 与 `*.exe.blockmap` 两个文件。
+            > **它们不是给用户下载的**：`latest.yml` 记录最新版本号，`.blockmap`
+            > 让已装旧版的客户端只下载变化的部分。**请不要删除它们**——少了这两个
+            > 文件，自动更新就会失效或退化成整包重下。你只需要下载 exe。
 
             ### 首次使用
 
