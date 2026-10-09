@@ -1,4 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification } from 'electron'
+import { appendFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
 import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps, type TrayHandle } from './tray.js'
@@ -52,6 +54,31 @@ let tray: TrayHandle | undefined
  * 表现为「功能没做」。不一致比不设置更难排查，因此这里显式写下并标注来源。
  */
 const APP_USER_MODEL_ID = 'com.stevenstack.dshremoteclient'
+
+/**
+ * 【临时诊断】把通知链路的每一步追加到 `userData/notify-trace.log`。
+ *
+ * 背景：探针（手工注入 `data-streaming` 元素再移除属性）能弹出通知，但真实的
+ * 「agent 回复结束」弹不出来。链路的前半段（DOM 变化 → 观察器 → IPC）与后半段
+ * （fire → 判定 → 弹）都各自被验证过，所以断点必然藏在一个**只在真实场景下才
+ * 不同**的环节里——而主进程是唯一能看到那一段的地方。
+ *
+ * 用**同步追加**：量极小（一次回复几行），同步写能让日志顺序与事件顺序严格一致，
+ * 排查时序问题时这点比性能重要。
+ *
+ * **临时设施**：定位完成后连同埋点一起删除。写日志失败绝不能影响通知本身，
+ * 所以整体包 try。
+ *
+ * @param step - 环节名（`ipc` / `pulse` / `fire` / `judge` / `shown` / `skip`）。
+ * @param detail - 该环节的关键取值。
+ */
+function traceNotify(step: string, detail: string): void {
+  try {
+    appendFileSync(join(dataDir, 'notify-trace.log'), `${new Date().toISOString()} ${step} ${detail}\n`)
+  } catch {
+    // 诊断日志失败不是主链路问题，忽略。
+  }
+}
 
 /**
  * 原生通知器。
@@ -504,9 +531,17 @@ const quietGate = createQuietGate({
 })
 
 ipcMain.on('shell:notify', (event, raw: unknown) => {
-  if (event.sender.id !== hostWebContentsId()) return
+  const hostId = hostWebContentsId()
+  if (event.sender.id !== hostId) {
+    traceNotify('ipc', `sender 不匹配 sender=${String(event.sender.id)} host=${String(hostId)}`)
+    return
+  }
   const request = parseNotifyRequest(raw)
-  if (request === undefined) return
+  if (request === undefined) {
+    traceNotify('ipc', '负载非法，已丢弃')
+    return
+  }
+  traceNotify('ipc', `收到 urgent=${String(request.urgent)} titleLen=${String(request.title.length)}`)
 
   /**
    * 组装通知上下文。
@@ -526,23 +561,27 @@ ipcMain.on('shell:notify', (event, raw: unknown) => {
     onActivate: () => { currentWindow?.show() },
   })
 
-  const fire = (context: NotifyContext): void => {
+  const fire = (context: NotifyContext, via: string): void => {
+    traceNotify('fire', `via=${via} focused=${String(context.windowFocused)} urgent=${String(context.urgent)}`)
     try {
-      notifier.notify(context)
+      const shown = notifier.notify(context)
+      traceNotify('judge', `notifier.notify 返回 ${String(shown)}`)
     } catch (error) {
       // 通知失败绝不能牵连页面本身：它是锦上添花的能力，不是主链路。
+      traceNotify('skip', `抛错 ${error instanceof Error ? error.message : String(error)}`)
       console.error('[dsh-remote-client] 原生通知失败：', error)
     }
   }
 
   // 审批：立即判定并弹（无条件可见，不受静默期影响）。
   if (request.urgent) {
-    fire(buildContext())
+    fire(buildContext(), 'immediate')
     return
   }
 
   // 消息：起/重置静默期；到期时才取出**那一刻**的上下文做判定。
-  quietGate.pulse(() => { fire(buildContext()) })
+  traceNotify('pulse', '起/重置静默期')
+  quietGate.pulse(() => { fire(buildContext(), 'quiet-elapsed') })
 })
 
 ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {
