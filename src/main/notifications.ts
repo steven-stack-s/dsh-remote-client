@@ -23,6 +23,99 @@
  */
 export const NOTIFY_DEDUPE_MS = 5000
 
+/**
+ * 静默期时长（毫秒）。
+ *
+ * 用户要求「只在 agent 真的停下来时提醒」，而 dsh **没有**暴露「整个会话是否
+ * 在跑」的信号（勘察结论：`data-state` 只挂在思考行、`aria-label="停止生成"`
+ * 的按钮在输入框非空时不渲染、`data-running` 只用于轨迹行与终端块）。所以
+ * 「停下来了」只能靠**观测到安静**来推断：最后一轮流式输出结束后再等这么久，
+ * 期间没有任何新输出，才认为它真的停了。
+ *
+ * 取 15 秒是权衡：太短会把「等一个慢工具」误判成结束（多弹一条）；太长则
+ * agent 真的干完了还要干等才收到提醒。真机上若发现仍会中途误报，把它调大。
+ */
+export const QUIET_PERIOD_MS = 15_000
+
+/**
+ * 延时调度端口。
+ *
+ * 抽成接口是为了能在测试里注入假定时器——静默期的全部行为都与时间有关，
+ * 而 `setTimeout` 不能被测（会让用例真的等 15 秒）。
+ */
+export interface QuietTimerPort {
+  /**
+   * 调度一次延时回调。
+   *
+   * @param callback - 到点后执行。
+   * @param delayMs - 延时。
+   * @returns 取消函数；调用后即便到点也不再执行回调。
+   */
+  schedule: (callback: () => void, delayMs: number) => () => void
+}
+
+/** 静默期闸门：把密集的「一轮结束」压成一次「真的结束了」。 */
+export interface QuietGate {
+  /**
+   * 收到一次「一轮流式输出结束」。
+   *
+   * **每次调用都会重置静默期**：agent 中途停下来等工具结果时，「结束」会反复
+   * 出现（`[data-streaming]` 同时匹配思考行与正文两个元素），不重置就会把
+   * 中途停顿误判成结束。
+   *
+   * @param onFire - 静默期完整走完后执行；被后续 `pulse` 或 `cancel` 取消时不执行。
+   */
+  pulse: (onFire: () => void) => void
+  /** 取消待触发的静默期（窗口销毁等）；之后仍可继续 `pulse`。 */
+  cancel: () => void
+}
+
+/**
+ * 创建静默期闸门。
+ *
+ * @param deps - 调度端口与可选的静默时长。
+ * @returns 闸门。
+ */
+export function createQuietGate(deps: {
+  /** 延时调度端口。 */
+  schedule: QuietTimerPort['schedule']
+  /** 静默时长，默认 {@link QUIET_PERIOD_MS}。 */
+  quietMs?: number
+}): QuietGate {
+  const quietMs = deps.quietMs ?? QUIET_PERIOD_MS
+  /** 当前待触发任务的取消函数；无待触发任务时为 undefined。 */
+  let cancelPending: (() => void) | undefined
+  /**
+   * 代次。每次 `pulse` / `cancel` 都递增，回调只在**自己那一代仍是最新**时执行。
+   *
+   * 为什么不只靠端口的取消语义：`clearTimeout` 确实保证已清掉的回调不再跑，
+   * 但那是**端口的承诺**，不是本模块能验证的事实。多这一道自检，闸门的正确性
+   * 就不依赖调用方传进来的 `schedule` 是否忠实——代价只是一个整数。
+   */
+  let generation = 0
+
+  const cancel = (): void => {
+    generation += 1
+    cancelPending?.()
+    cancelPending = undefined
+  }
+
+  return {
+    pulse: (onFire: () => void): void => {
+      // 先取消上一个：重置语义就是「重新开始数」，留着旧的会弹两次。
+      cancel()
+      const myGeneration = generation
+      cancelPending = deps.schedule(() => {
+        if (generation !== myGeneration) return
+        // 回调跑了，句柄即失效。不置空的话下一轮 `pulse` 会误以为还有待触发任务。
+        cancelPending = undefined
+        onFire()
+      }, quietMs)
+    },
+    cancel,
+  }
+}
+
 /** {@link shouldNotify} 的输入。 */
 export interface ShouldNotifyInput {
   /** 是否为必须让用户看到的信号（审批 = true，普通消息 = false）。 */

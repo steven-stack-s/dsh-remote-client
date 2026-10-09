@@ -66,13 +66,20 @@ export const MESSAGE_ATTRIBUTE = 'data-streaming'
  * {@link MESSAGE_ATTRIBUTE} 属性**被移除**时才触发；元素出现本身**不**触发。
  * 后人若把它当成 `appear` 规则处理，会得到「回复刚开始就通知」的反向行为。
  *
+ * ⚠️ **它同时匹配两类元素**：`dsh-client-ui-chat` 里思考行（`ReasoningRow`）与
+ * 正文（`AssistantMarkdown`）都带这个属性（分别是 `running` 与 `streaming`）。
+ * 所以一轮之内它可能**反复触发**——这不是缺陷，而是选它的代价：两者用的是
+ * 同一个属性名，前端没有更细的区分。真正把它压成「一次」的是主进程的**静默期**
+ * （`notifications.ts` 的 `QUIET_PERIOD_MS`）：每次触发都重置计时，只有连续
+ * 15 秒没有新输出才算这一轮真的停了。
+ *
  * 上报 `urgent: false`，由主进程按 `win.isFocused()` 决定是否真正弹通知——
  * **窗口聚焦时用户正看着屏幕，不该再被打扰**（这是设计意图，不是缺陷）。
  *
  * **来源**：dsh 对话流组件 `dsh-client-ui-chat` 里
  * `"data-streaming": streaming || void 0`（值为 falsy 时 React 直接**移除**该属性）：
  * - 属性存在 → 正在流式输出；
- * - 属性消失 → **输出结束** ← 这才是该通知用户的时机。
+ * - 属性消失 → **输出暂停或结束** ← 此刻上报，由主进程判是不是真的结束。
  *
  * 注意「消失」的判定很苛刻：**属性被改成别的值不算**（那说明流式仍在继续）。
  * 观察器里的具体判定见 `host.ts`。

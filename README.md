@@ -38,7 +38,7 @@ This client does the opposite: **the backend always stays remote**. The window l
 - **Access without a plugin**: a dsh without the auth plugin can be reached with the launch token printed by `dsh web`.
 - **Offline self-healing**: when the host is unreachable the client shows an overlay page and retries with exponential backoff (1s→2s→…→30s), retrying immediately once the network recovers.
 - **Link routing**: links to a configured host or the current site navigate inside the client; external links go to the system browser.
-- **Native notifications**: approval requests raise a system notification while the window is unfocused.
+- **Native notifications**: approval requests pop up **unconditionally** (they block your workflow); a message notification fires only once a reply has **genuinely stopped** and the window is unfocused.
 - **Tray**: host management and on/off both live here (on Windows the frameless window shows no menu bar — see Design highlights).
 - **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools.
 - **Windows installer**: ships its own Electron runtime, double-click to install, built by CI.
@@ -77,7 +77,7 @@ Reading the Chinese comments in that block: `pnpm test` = build + all tests (inc
 - **Cookie names are bound to the authority** (`dsh-auth-` + `sha256(authority)`), so accessing via a different IP / domain is treated as a **new host** and requires logging in again.
 - `unsafely-treat-insecure-origin-as-secure` **can only be set at startup**, so after adding an `http://` host at runtime the client must be restarted for it to take effect; `https://` hosts are unaffected.
 - On a plaintext HTTP link, dsh's session cookie carries no `Secure` attribute, so an HTTPS reverse proxy is recommended for cross-network deployments.
-- Native notifications: **both approval and message notifications are verified working on a real machine** (the selectors come from dsh's upstream client UI packages, so no on-device recon was needed). Message notifications only fire when the window is **unfocused**. While `MESSAGE_SELECTOR` is `null` that rule is simply disabled — the feature does not trigger rather than breaking. If an upstream dsh change ever invalidates the selectors, [`docs/dom-recon-script.js`](docs/dom-recon-script.js) can be used to re-reconnoitre the DOM.
+- Native notifications: **both approval and message notifications are verified working on a real machine** (the selectors come from dsh's upstream client UI packages, so no on-device recon was needed). Approvals pop up **unconditionally**; message notifications fire only when the window is **unfocused**, and only once the reply has **genuinely gone quiet** (no new streaming output within 15 seconds of the last one) — pausing to wait for a tool result does not trigger one. **Known false-positive boundary**: dsh exposes no "is the whole session running" signal, so if some step leaves a gap longer than 15 seconds between outputs, a mid-run notification can still slip through. While `MESSAGE_SELECTOR` is `null` that rule is simply disabled — the feature does not trigger rather than breaking. If an upstream dsh change ever invalidates the selectors, [`docs/dom-recon-script.js`](docs/dom-recon-script.js) can be used to re-reconnoitre the DOM.
 - Host renaming is already available: 「编辑(E)」 (Edit(E)) → 「编辑主机…」 (Edit Host…) lets you change the display name, the address and the launch token.
 - **The installer is not code-signed**, so end users will hit SmartScreen's "unknown publisher" prompt on first run (see below).
 
@@ -92,6 +92,11 @@ Download `DSH Remote Client-<version>-setup.exe` and double-click to install.
 **No Node, pnpm or any other runtime needs to be installed** — the Electron runtime is already bundled into the installer (about 106MB).
 
 The setup wizard supports choosing the install location and creating desktop and Start Menu shortcuts, and **does not require administrator privileges** (it installs into the current user's directory). Uninstalling **keeps** the host configuration and login state, so no reconfiguration is needed after reinstalling.
+
+> 📶 **Downloads slow or failing?** Release assets are frequently unreachable from
+> mainland China. The quickest fix is prefixing the URL with a public accelerator
+> (zero setup, but public proxies die off); for something durable, deploy your own
+> forwarding Worker — see [**Self-hosted GitHub download accelerator**](docs/gh-download-accelerator.md).
 
 > ⚠️ The installer is **not code-signed**, so Windows SmartScreen will show "unknown publisher".
 > Click "More info" → "Run anyway". To get rid of that prompt you would need to buy a code-signing

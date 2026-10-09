@@ -16,7 +16,7 @@ import { needsRestartFor } from './restart.js'
 import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
 import { parseThemeSource } from '../shared/desktop-shell.js'
-import { createNotifier, parseNotifyRequest } from './notifications.js'
+import { createNotifier, createQuietGate, parseNotifyRequest, type NotifyContext } from './notifications.js'
 import type { HostEntry, HostsFile } from '../shared/types.js'
 
 const dataDir = app.getPath('userData')
@@ -485,27 +485,64 @@ ipcMain.on('shell:theme', (event, raw: unknown) => {
  * 随意触发。远端页面本就是本项目认定的不可信内容，其上报按外部输入处理
  * （`parseNotifyRequest` 只接受严格合法的负载）。
  */
+/**
+ * 静默期闸门：消息通知先攒着，等「真的安静下来」再弹。
+ *
+ * 用户反馈「每轮回复都提醒太频繁」，要求只在 agent 真正停下来时提醒。而 dsh
+ * 没有暴露「整个会话是否在跑」的信号（见 `notifications.ts` 的 `QUIET_PERIOD_MS`
+ * 说明），所以只能靠**观测到安静**来推断：最后一轮流式输出结束后再等 15 秒，
+ * 期间没有任何新输出，才认为它真的停了。
+ *
+ * **只作用于消息通知**：审批走另一条路（立即判定）——它阻塞用户的工作流，
+ * 压后 15 秒既无意义、又会让 agent 白等。
+ */
+const quietGate = createQuietGate({
+  schedule: (callback, delayMs) => {
+    const timer = setTimeout(callback, delayMs)
+    return () => { clearTimeout(timer) }
+  },
+})
+
 ipcMain.on('shell:notify', (event, raw: unknown) => {
   if (event.sender.id !== hostWebContentsId()) return
   const request = parseNotifyRequest(raw)
   if (request === undefined) return
 
-  try {
-    notifier.notify({
-      urgent: request.urgent,
-      // 焦点判定只在主进程做（preload 不重复实现）——它才是那个知道窗口
-      // 是否被隐藏/最小化/被别的应用盖住的地方。
-      windowFocused: currentWindow?.win.isFocused() ?? false,
-      hostLabel: hostsData.hosts.find(h => h.id === currentHostId)?.label ?? 'dsh',
-      titleHint: request.title,
-      // 点击通知 → 唤起并聚焦窗口。窗口可能是被收进托盘的隐藏态（隐藏 ≠ 关闭），
-      // `show()` 内部已处理 show + focus。
-      onActivate: () => { currentWindow?.show() },
-    })
-  } catch (error) {
-    // 通知失败绝不能牵连页面本身：它是锦上添花的能力，不是主链路。
-    console.error('[dsh-remote-client] 原生通知失败：', error)
+  /**
+   * 组装通知上下文。
+   *
+   * **焦点现取**，不是上报时取一次存着：静默期到期时用户可能已经切回窗口看
+   * 结果了，那样就不该再弹——判据必须是「我准备弹的这一刻他到底在不在看」。
+   */
+  const buildContext = (): NotifyContext => ({
+    urgent: request.urgent,
+    // 焦点判定只在主进程做（preload 不重复实现）——它才是那个知道窗口
+    // 是否被隐藏/最小化/被别的应用盖住的地方。
+    windowFocused: currentWindow?.win.isFocused() ?? false,
+    hostLabel: hostsData.hosts.find(h => h.id === currentHostId)?.label ?? 'dsh',
+    titleHint: request.title,
+    // 点击通知 → 唤起并聚焦窗口。窗口可能是被收进托盘的隐藏态（隐藏 ≠ 关闭），
+    // `show()` 内部已处理 show + focus。
+    onActivate: () => { currentWindow?.show() },
+  })
+
+  const fire = (context: NotifyContext): void => {
+    try {
+      notifier.notify(context)
+    } catch (error) {
+      // 通知失败绝不能牵连页面本身：它是锦上添花的能力，不是主链路。
+      console.error('[dsh-remote-client] 原生通知失败：', error)
+    }
   }
+
+  // 审批：立即判定并弹（无条件可见，不受静默期影响）。
+  if (request.urgent) {
+    fire(buildContext())
+    return
+  }
+
+  // 消息：起/重置静默期；到期时才取出**那一刻**的上下文做判定。
+  quietGate.pulse(() => { fire(buildContext()) })
 })
 
 ipcMain.handle('shell:welcome:add', async (_event, input: unknown) => {

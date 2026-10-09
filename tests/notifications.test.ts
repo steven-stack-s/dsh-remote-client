@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   NOTIFY_BODY_MAX,
   NOTIFY_DEDUPE_MS,
+  QUIET_PERIOD_MS,
   createNotifier,
+  createQuietGate,
   notifyBody,
   parseNotifyRequest,
   sessionNameFromDocumentTitle,
@@ -307,5 +309,141 @@ describe('notifyBody', () => {
     const body = notifyBody(true, '会'.repeat(200))
     expect(body.length).toBeLessThanOrEqual(NOTIFY_BODY_MAX)
     expect(body.endsWith('…')).toBe(true)
+  })
+})
+
+/**
+ * 静默期的行为契约。
+ *
+ * 存在的理由：dsh 没有「整个会话是否在跑」的信号（`data-state` 只挂在思考行、
+ * 「停止生成」按钮在输入框非空时不渲染），所以「agent 真的停下来了」只能靠
+ * **观测到安静**来推断。而这个推断的精度直接决定用户会不会被中途打扰——
+ * 判错一次就是一条多余的系统通知。
+ */
+describe('createQuietGate', () => {
+  /** 假定时器：记录被调度的任务，由用例手动触发（不依赖真实计时）。 */
+  function fakeTimers(): {
+    schedule: (callback: () => void, delayMs: number) => () => void
+    /** 触发最近一个尚未被取消的任务。 */
+    fireLatest: () => void
+    /**
+     * 触发**所有未被取消**的任务。
+     *
+     * 这是唯一能抓住「忘记取消上一个任务」这类缺陷的手段：只触发最后一个的话，
+     * 漏取消的前序任务永远不会被执行，测试照样绿——而真实世界里它们到点就会跑，
+     * 结果是连弹多条通知验证（本用例的第一次变异验证正是栽在这里）。
+     */
+    fireAll: () => void
+    /** 最近一个任务是否已被取消。 */
+    latestCancelled: () => boolean
+    /** 已调度任务的延时列表（每次读取时现算，不能是快照）。 */
+    readonly delays: number[]
+  } {
+    const tasks: { callback: () => void, cancelled: boolean, delayMs: number }[] = []
+    return {
+      schedule: (callback, delayMs) => {
+        const task = { callback, cancelled: false, delayMs }
+        tasks.push(task)
+        return () => { task.cancelled = true }
+      },
+      fireLatest: () => {
+        const task = tasks[tasks.length - 1]
+        if (task === undefined) throw new Error('没有任何被调度的任务')
+        task.callback()
+      },
+      fireAll: () => {
+        for (const task of tasks) if (!task.cancelled) task.callback()
+      },
+      latestCancelled: () => tasks[tasks.length - 1]?.cancelled ?? false,
+      get delays(): number[] {
+        return tasks.map(task => task.delayMs)
+      },
+    }
+  }
+
+  it('收到一次「一轮结束」后，按静默时长调度一次', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule })
+
+    gate.pulse(() => undefined)
+
+    expect(timer.delays).toEqual([QUIET_PERIOD_MS])
+  })
+
+  it('静默期走完才回调——这是「真的停下来了」的判定时刻', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule })
+    let fired = 0
+
+    gate.pulse(() => { fired += 1 })
+    expect(fired).toBe(0)   // 尚未走完，不该触发
+
+    timer.fireLatest()
+    expect(fired).toBe(1)
+  })
+
+  it('静默期内又收到一次结束 → 前一次作废，只回调一次（不累积）', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule })
+    let fired = 0
+
+    gate.pulse(() => { fired += 1 })     // 第一次
+    gate.pulse(() => { fired += 1 })     // 中途又结束一次 → 重置
+    gate.pulse(() => { fired += 1 })     // 再来一次 → 再重置
+
+    expect(timer.delays).toEqual([QUIET_PERIOD_MS, QUIET_PERIOD_MS, QUIET_PERIOD_MS])
+
+    // 触发**全部未被取消**的任务：只有最后一个还活着，所以只该回调一次。
+    // （若实现漏了取消前序任务，这里会变成 3——这正是本用例要守的东西。）
+    timer.fireAll()
+    expect(fired).toBe(1)
+  })
+
+  it('cancel 之后即便任务被触发也不回调（窗口销毁等场景）', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule })
+    let fired = 0
+
+    gate.pulse(() => { fired += 1 })
+    gate.cancel()
+    expect(timer.latestCancelled()).toBe(true)
+
+    timer.fireLatest()
+    expect(fired).toBe(0)
+  })
+
+  it('一次静默期结束后还能再来一轮（可重入，不是一次性）', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule })
+    let fired = 0
+
+    gate.pulse(() => { fired += 1 })
+    timer.fireLatest()
+    gate.pulse(() => { fired += 1 })
+    timer.fireLatest()
+
+    expect(fired).toBe(2)
+  })
+
+  it('取消后再 pulse 能恢复正常（cancel 不把门永久关上）', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule })
+    let fired = 0
+
+    gate.pulse(() => { fired += 1 })
+    gate.cancel()
+    gate.pulse(() => { fired += 1 })
+    timer.fireLatest()
+
+    expect(fired).toBe(1)
+  })
+
+  it('静默时长可覆盖', () => {
+    const timer = fakeTimers()
+    const gate = createQuietGate({ schedule: timer.schedule, quietMs: 30_000 })
+
+    gate.pulse(() => undefined)
+
+    expect(timer.delays).toEqual([30_000])
   })
 })
