@@ -42,6 +42,10 @@ This client does the opposite: **the backend always stays remote**. The window l
 - **Tray**: host management and on/off both live here (on Windows the frameless window shows no menu bar — see Design highlights).
 - **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools.
 - **Automatic (differential) updates**: about 30 seconds after startup the client checks for a new version **in the background** and downloads only the parts that changed (no more re-downloading 106MB). Once the download finishes it asks exactly once — "Restart now" installs it, "Later" is not nagging and the same version is never asked about twice. All of it is silent: an unreachable network or a broken update source only leaves a log line, **never an error dialog**, and never affects normal use.
+  > **Measured**: upgrading 0.1.9 → 0.1.10 pulled **1.26MB** instead of the full 106.3MB package (about 1%).
+  > The updater writes a diagnostic log to `%APPDATA%\dsh-remote-client\update.log` (latest
+  > 200 lines), where you can see how much each download actually transferred and whether it
+  > ever fell back to the full package.
   > ⚠️ **This requires the installed client to already be 0.1.7 or newer.** Versions 0.1.6 and earlier contain no updater, so they can only be upgraded by downloading the installer by hand — **that is the last time anyone has to install the 106MB package manually.**
 - **Windows installer**: ships its own Electron runtime, double-click to install, built by CI.
 

@@ -295,6 +295,18 @@ export function installUpdater(deps: UpdaterDeps): void {
     // null，链路上只剩我们这一个可观测的失败出口。
     autoUpdater.autoDownload = false
 
+    // 我们构建的是普通 nsis 目标，Release 里从来没有 web 安装器。不显式关掉的话，
+    // 库会在每次下载时警告一句（真机日志里实测出现过）：
+    //
+    //   disableWebInstaller is set to false, you should set it to true if you do not
+    //   plan on using a web installer. This will default to true in a future version.
+    //
+    // 那行警告会占掉 update.log 里本已有限的 200 行，且库明确说未来版本会把默认值
+    // 改成 true——显式置位既让日志干净，也避免将来默认值翻转时行为突变。
+    // 万一将来真的改用 web 安装器，这行会以 ERR_UPDATER_WEB_INSTALLER_DISABLED
+    // 明确报错，而不是悄悄走错分支。
+    autoUpdater.disableWebInstaller = true
+
     autoUpdater.on('update-available', event => {
       // 记下「确实发现了新版」——它把「没提示更新」的两种可能分开了：
       // 日志里有这行却后面没有下文，说明问题在下载或提示；完全没有这行，

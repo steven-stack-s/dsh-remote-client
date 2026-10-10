@@ -52,6 +52,7 @@ const { fake } = vi.hoisted(() => ({
   fake: {
     autoDownload: true,
     autoInstallOnAppQuit: true,
+    disableWebInstaller: false,
     logger: 'default' as unknown,
     quitCalled: 0,
     handlers: {} as Record<string, Array<(...args: unknown[]) => void>>,
@@ -144,6 +145,7 @@ describe('更新器接线', () => {
   beforeEach(() => {
     fake.autoDownload = true
     fake.autoInstallOnAppQuit = true
+    fake.disableWebInstaller = false
     fake.logger = 'default'
     fake.quitCalled = 0
   })
@@ -158,6 +160,10 @@ describe('更新器接线', () => {
     // autoInstallOnAppQuit 默认 true：会在用户从托盘正常退出时顺手装更新，
     // 属于「不自动安装」约束要挡的静默重启。
     expect(fake.autoInstallOnAppQuit).toBe(false)
+
+    // 我们不用 web 安装器。不显式关掉时库每次下载都会警告一句，实测会占掉
+    // update.log 里有限的 200 行；而且库说未来版本会把默认值改成 true。
+    expect(fake.disableWebInstaller).toBe(true)
 
     // 日志器**不是** null：库的默认实现往 stdout 刷（打包版看不到），但直接置 null
     // 会连「差分失败、回退全量下载」这条唯一线索一起丢掉——它只从库自己的 logger
