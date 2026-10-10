@@ -142,6 +142,51 @@ function logStep(message: string): void {
   updateLog?.record(message)
 }
 
+/** 把库日志的任意参数拼成一段可读文本。 */
+function formatLibraryLogArg(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value instanceof Error) return `${value.name}: ${value.message}`
+  if (value === null || value === undefined) return ''
+  try {
+    // 库常用 `log.info({ file }, "message")` 这种「对象在前、文案在后」的调用形式，
+    // 所以对象也要能落进日志，而不是变成 [object Object]。
+    return JSON.stringify(value) ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+/**
+ * 创建写给 electron-updater 的日志适配器：把库的内部日志接进我们的落盘日志。
+ *
+ * 为什么不是 `autoUpdater.logger = null`（那是最初的写法）：置 null 会把库内部
+ * **唯一**报告「差分下载失败、回退全量」的渠道一起丢掉。那条消息只从
+ * `AppUpdater.differentialDownloadInstaller` 的 catch 里发出，没有任何公开事件或
+ * 返回值暴露给调用方（对调用方只返回一个布尔）。丢掉它就等于丢掉
+ * 「这次更新为什么下了 106MB 而不是几 MB」的答案。
+ *
+ * 为什么仍不保留库的默认实现：默认那套写 **stdout**，而打包版没有控制台。
+ *
+ * `debug` 刻意不接：那是逐块级别的细节，会把 200 行上限冲掉，反而埋掉关键行。
+ *
+ * @returns 符合库要求（`{ info, warn, error }`）的日志器。
+ */
+function createLibraryLogger(): {
+  info: (...args: unknown[]) => void
+  warn: (...args: unknown[]) => void
+  error: (...args: unknown[]) => void
+} {
+  const write = (prefix: string, args: unknown[]): void => {
+    const text = args.map(formatLibraryLogArg).filter(part => part !== '').join(' ')
+    logStep(`${prefix}${text}`)
+  }
+  return {
+    info: (...args) => { write('[库] ', args) },
+    warn: (...args) => { write('[库·警告] ', args) },
+    error: (...args) => { write('[库·错误] ', args) },
+  }
+}
+
 /**
  * 装配是否已完成。**幂等守卫**（I2）。
  *
@@ -205,10 +250,20 @@ export function installUpdater(deps: UpdaterDeps): void {
     updateLog = createUpdateLog({ dir: deps.dataDir })
     logStep(`更新器启动（当前版本 ${currentVersionText()}，日志位于 update.log）`)
 
-    // electron-updater 默认自带一个往 stdout 刷的日志器。这里关掉它，改用
-    // console.error 只记错误——更新过程正常与否用户无从干预，刷屏的进度日志
-    // 只会淹没真正的错误。
-    autoUpdater.logger = null
+    // electron-updater 默认自带一个往 **stdout** 刷的日志器；打包版没有控制台，
+    // 那些输出等于丢掉。所以不保留它的默认实现——但也**不再置为 null**：直接置 null
+    // 会把库内部最有价值的一条线索一起丢掉：
+    //
+    //   "Cannot download differentially, fallback to full download: …"
+    //
+    // 差分下载失败时库只通过它自己的 logger 报告（`AppUpdater.differentialDownloadInstaller`
+    // 的 catch 里），没有任何公开事件或返回值暴露这件事——`differentialDownloadInstaller`
+    // 对调用方只返回一个布尔。换句话说：**不上报这条，用户就无从知道「这次更新为什么
+    // 下了 106MB 而不是几 MB」**。
+    //
+    // 改成一个把消息写进我们落盘日志的适配器：既保留「不刷 stdout」这个初衷，
+    // 又让这些线索可查。debug 级刻意不接——那是逐块级别的细节，会把 200 行上限冲掉。
+    autoUpdater.logger = createLibraryLogger()
 
     // 约束 3：不自动安装。`autoInstallOnAppQuit` 默认为 true——它会在**用户从
     // 托盘退出应用时**顺手把已下载的更新装上。那正是「静默重启会丢掉界面状态」

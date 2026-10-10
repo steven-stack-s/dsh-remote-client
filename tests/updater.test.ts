@@ -122,6 +122,24 @@ async function install(
   return dataDir
 }
 
+/**
+ * 等日志文件出现、且内容满足条件；最多轮询约 1 秒。
+ *
+ * 写入是在队列里异步落盘的，所以断言前得等它出现。用轮询而不是固定 sleep：
+ * 慢机器上固定等待会偶发失败，而这组用例本身要断言的就是「写进去了没有」。
+ */
+async function waitForLog(dir: string, predicate: (text: string) => boolean): Promise<string> {
+  const file = join(dir, 'update.log')
+  for (let i = 0; i < 50; i++) {
+    if (existsSync(file)) {
+      const text = await readFile(file, 'utf8')
+      if (predicate(text)) return text
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  return existsSync(file) ? readFile(file, 'utf8') : ''
+}
+
 describe('更新器接线', () => {
   beforeEach(() => {
     fake.autoDownload = true
@@ -130,9 +148,9 @@ describe('更新器接线', () => {
     fake.quitCalled = 0
   })
 
-  it('关掉 autoDownload / autoInstallOnAppQuit 与自带日志器', async () => {
+  it('关掉 autoDownload / autoInstallOnAppQuit，并把库日志接进落盘日志', async () => {
     const mod = await freshModule()
-    await install(mod)
+    const dataDir = await install(mod)
 
     // autoDownload 默认 true：不关掉的话，下载的启动者是库而不是我们，
     // 那条分支的 rejection 无人 await，失败不会有 console.error。
@@ -140,8 +158,26 @@ describe('更新器接线', () => {
     // autoInstallOnAppQuit 默认 true：会在用户从托盘正常退出时顺手装更新，
     // 属于「不自动安装」约束要挡的静默重启。
     expect(fake.autoInstallOnAppQuit).toBe(false)
-    // 关掉库自带日志器（setter 会把 null 换成 NoOpLogger），改用 console.error。
-    expect(fake.logger).toBe(null)
+
+    // 日志器**不是** null：库的默认实现往 stdout 刷（打包版看不到），但直接置 null
+    // 会连「差分失败、回退全量下载」这条唯一线索一起丢掉——它只从库自己的 logger
+    // 发出，没有公开事件暴露。所以换成一个写进 update.log 的适配器。
+    //
+    // `fake.logger` 声明成 `unknown`（它要能装下任意值），这里按库要求的形状收窄。
+    const logger = fake.logger as {
+      info: (message: string) => void
+      warn: (message: string) => void
+      error: (message: string) => void
+    } | null
+    expect(logger).not.toBeNull()
+    expect(typeof logger?.info).toBe('function')
+    expect(typeof logger?.warn).toBe('function')
+    expect(typeof logger?.error).toBe('function')
+
+    // 关键的一条：它真的把消息写进了我们的日志文件。
+    logger?.error('Cannot download differentially, fallback to full download: boom')
+    const text = await waitForLog(dataDir, t => t.includes('Cannot download differentially'))
+    expect(text).toContain('Cannot download differentially')
   })
 
   it('installUpdater 幂等：重复调用不重复注册监听', async () => {
@@ -387,19 +423,6 @@ describe('更新器接线', () => {
    * 免得在慢机器上偶发失败。
    */
   describe('落盘日志（update.log）', () => {
-    /** 等日志文件出现且满足条件，最多约 1 秒。 */
-    async function waitForLog(dir: string, predicate: (text: string) => boolean): Promise<string> {
-      const file = join(dir, 'update.log')
-      for (let i = 0; i < 50; i++) {
-        if (existsSync(file)) {
-          const text = await readFile(file, 'utf8')
-          if (predicate(text)) return text
-        }
-        await new Promise(resolve => setTimeout(resolve, 20))
-      }
-      return existsSync(file) ? readFile(file, 'utf8') : ''
-    }
-
     it('装配后写下启动记录（含当前版本）', async () => {
       const mod = await freshModule()
       const dataDir = await install(mod, { promptRestart: async () => false })
