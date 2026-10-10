@@ -294,8 +294,16 @@ export function installUpdater(deps: UpdaterDeps): void {
 async function checkNow(): Promise<void> {
   try {
     logStep(`开始检查更新（当前版本 ${currentVersionText()}）`)
-    await autoUpdater.checkForUpdates()
-    // 「没有新版本」是正常路径，不记——否则每 6 小时一条噪音。
+    const result = await autoUpdater.checkForUpdates()
+    // 明确记下「确实没有新版」这个**成功**结局。
+    //
+    // 缺这一行时，日志里只有「开始检查更新」而没有任何后续，读者无法区分
+    // 「检查成功、只是没有新版」与「进程在检查中途没了」——这正是本日志要消除的
+    // 那类歧义。另外两种结局各有自己的行：有新版本走 update-available，
+    // 失败走下面的 catch。
+    if (result?.isUpdateAvailable === false) {
+      logStep('检查完成：当前已是最新版本')
+    }
   } catch (error) {
     logError('检查更新失败（已忽略，不影响使用）：', error)
   }
