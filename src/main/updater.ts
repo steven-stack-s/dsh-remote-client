@@ -31,6 +31,7 @@
 
 import { app } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { createUpdateLog, type UpdateLog } from './update-log.js'
 import {
   UPDATE_CHECK_DELAY_MS,
   UPDATE_CHECK_INTERVAL_MS,
@@ -82,13 +83,63 @@ export interface UpdaterDeps {
 }
 
 /**
- * 记一条更新相关的日志。
+ * 落盘日志句柄。装配时创建（{@link installUpdater}），在那之前为 undefined。
  *
- * 统一前缀，便于用户在真机日志里筛。**成功路径不记**（那是噪音），只记失败——
- * 更新是后台行为，用户看不到它，出问题时日志是唯一线索。
+ * 为 undefined 的两种情况都无害：开发模式下装配直接 return（`isPackaged` 为 false），
+ * 以及装配前的极早期调用——此时只剩 `console` 这一路输出。
+ */
+let updateLog: UpdateLog | undefined
+
+/** 把未知值描述成一行可读文本。 */
+function describeError(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`
+  return String(error)
+}
+
+/**
+ * 当前应用版本号，用于日志。
+ *
+ * 取自 `autoUpdater.currentVersion`（它由 electron-updater 从 `app.getVersion()` 填好），
+ * 而不是自己 import `app` —— 本模块只在装配处用到 `app`，能少一处耦合就少一处。
+ * 取不到时返回 `未知`：日志里出现「未知」比抛异常或出现字符串 `undefined` 都好。
+ */
+function currentVersionText(): string {
+  try {
+    const text = String(autoUpdater.currentVersion)
+    return text === '' || text === 'undefined' ? '未知' : text
+  } catch {
+    return '未知'
+  }
+}
+
+/**
+ * 记一条更新相关的**失败**日志。
+ *
+ * 两路输出，缺一不可：
+ * - `console.error` —— 开发模式（`pnpm dev`）下开发者要有终端输出；
+ * - {@link updateLog} —— **打包版 Windows 没有控制台**，只有落盘才看得见。
+ *
+ * 落盘这一路之前是缺的，而它正是「更新在真机上什么都没发生」唯一能自证的渠道：
+ * 用户报「没提示更新」时，日志能区分「确实没有新版」与「静默失败了」。
+ *
+ * @param message - 前缀说明（统一带 `[dsh-remote-client]` 便于筛选）。
+ * @param error - 原始错误；会被压成一行。
  */
 function logError(message: string, error: unknown): void {
   console.error(`[dsh-remote-client] ${message}`, error)
+  updateLog?.record(`${message}${describeError(error)}`)
+}
+
+/**
+ * 记一条更新相关的**过程**日志（成功路径）。
+ *
+ * 与 {@link logError} 分开是因为两者的默认去向不同：过程日志只落盘、不进
+ * `console`——开发模式下的正常更新流程没必要刷终端。而失败必须两路都有。
+ *
+ * @param message - 记录文本。
+ */
+function logStep(message: string): void {
+  updateLog?.record(message)
 }
 
 /**
@@ -149,6 +200,11 @@ export function installUpdater(deps: UpdaterDeps): void {
   installed = true
 
   try {
+    // 落盘日志在第一行就建好：它必须能记录**后面每一步**，包括装配失败。
+    // 失败一律吞掉（见 update-log.ts），所以这里不需要 try。
+    updateLog = createUpdateLog({ dir: deps.dataDir })
+    logStep(`更新器启动（当前版本 ${currentVersionText()}，日志位于 update.log）`)
+
     // electron-updater 默认自带一个往 stdout 刷的日志器。这里关掉它，改用
     // console.error 只记错误——更新过程正常与否用户无从干预，刷屏的进度日志
     // 只会淹没真正的错误。
@@ -184,7 +240,11 @@ export function installUpdater(deps: UpdaterDeps): void {
     // null，链路上只剩我们这一个可观测的失败出口。
     autoUpdater.autoDownload = false
 
-    autoUpdater.on('update-available', () => {
+    autoUpdater.on('update-available', event => {
+      // 记下「确实发现了新版」——它把「没提示更新」的两种可能分开了：
+      // 日志里有这行却后面没有下文，说明问题在下载或提示；完全没有这行，
+      // 说明检查阶段就没发现新版（或检查本身失败了）。
+      logStep(`发现新版本 ${event.version}，开始后台下载`)
       // 这里**只下载，不询问**：此刻还没有下载，问用户等于逼他等着下载完成。
       void autoUpdater.downloadUpdate().catch(error => {
         logError('更新下载失败（已忽略，不影响使用）：', error)
@@ -192,6 +252,7 @@ export function installUpdater(deps: UpdaterDeps): void {
     })
 
     autoUpdater.on('update-downloaded', event => {
+      logStep(`新版本 ${event.version} 已下载完成，准备询问用户`)
       void handleDownloaded(deps, event.version)
     })
 
@@ -232,7 +293,9 @@ export function installUpdater(deps: UpdaterDeps): void {
  */
 async function checkNow(): Promise<void> {
   try {
+    logStep(`开始检查更新（当前版本 ${currentVersionText()}）`)
     await autoUpdater.checkForUpdates()
+    // 「没有新版本」是正常路径，不记——否则每 6 小时一条噪音。
   } catch (error) {
     logError('检查更新失败（已忽略，不影响使用）：', error)
   }
@@ -260,7 +323,12 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
   try {
     const promptedVersion = await readPromptedVersion(deps.dataDir)
     // 决策交给纯函数（有单测），这里只执行。
-    if (!shouldPromptForUpdate({ availableVersion: version, promptedVersion })) return
+    if (!shouldPromptForUpdate({ availableVersion: version, promptedVersion })) {
+      // 分离「静默跳过」与「静默失败」——这正是本日志存在的理由。用户报
+      // 「有新版本却没提示」时，这行能说明是设计如此（只提示一次），而不是坏了。
+      logStep(`版本 ${version} 已经提示过（上次 ${promptedVersion ?? '无记录'}），不再重复打扰`)
+      return
+    }
 
     // 先记状态再问：用户点「立即重启」后进程马上就要退出，那时再写盘可能来不及。
     // 反过来说，如果用户其实是点了「稍后」，状态也已经写好了——这正是我们要的语义。
@@ -275,7 +343,16 @@ async function handleDownloaded(deps: UpdaterDeps, version: string): Promise<voi
     }
 
     const restart = await deps.promptRestart(version)
-    if (!restart) return
+    if (!restart) {
+      logStep(`用户选择了「稍后」（版本 ${version}），本次不安装`)
+      return
+    }
+    logStep(`用户选择了「立即重启」，开始安装版本 ${version}`)
+    // **必须先把日志刷盘**：下一行 `quitAndInstall()` 会立即走应用退出流程，
+    // 而日志写入是在队列里异步进行的——不在这里等一下，这条最关键的记录
+    // （「用户确实点了重启」）很可能还没落盘进程就没了，于是真机上排查时看到的
+    // 日志恰好缺了最后一环。flush 不抛，失败也只是少一条记录。
+    await updateLog?.flush()
 
     // 约束 3：到这一步才是用户明确要求安装。
     //

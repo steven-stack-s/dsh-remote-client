@@ -1,5 +1,5 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -375,5 +375,89 @@ describe('更新器接线', () => {
 
     expect(order).toEqual(['promptRestart:false'])
     expect(fake.quitCalled).toBe(0)
+  })
+
+  /**
+   * 落盘日志：真机上唯一能自证的渠道。
+   *
+   * 打包版 Windows 没有控制台，`console.error` 用户看不到。加这条落盘日志正是为了
+   * 让「更新在真机上什么都没发生」可区分——是**确实没有新版**，还是**静默失败了**。
+   *
+   * 写入是排队异步的，所以断言前要等文件出现内容；用轮询而不是固定 sleep，
+   * 免得在慢机器上偶发失败。
+   */
+  describe('落盘日志（update.log）', () => {
+    /** 等日志文件出现且满足条件，最多约 1 秒。 */
+    async function waitForLog(dir: string, predicate: (text: string) => boolean): Promise<string> {
+      const file = join(dir, 'update.log')
+      for (let i = 0; i < 50; i++) {
+        if (existsSync(file)) {
+          const text = await readFile(file, 'utf8')
+          if (predicate(text)) return text
+        }
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      return existsSync(file) ? readFile(file, 'utf8') : ''
+    }
+
+    it('装配后写下启动记录（含当前版本）', async () => {
+      const mod = await freshModule()
+      const dataDir = await install(mod, { promptRestart: async () => false })
+
+      const text = await waitForLog(dataDir, t => t.includes('更新器启动'))
+      expect(text).toContain('更新器启动')
+      expect(text).toMatch(/当前版本/)
+    })
+
+    it('用户点「稍后」后有对应记录——区别于「静默失败」', async () => {
+      const mod = await freshModule()
+      const dataDir = await install(mod, { promptRestart: async () => false })
+
+      await fireDownloaded('5.0.0')
+
+      const text = await waitForLog(dataDir, t => t.includes('稍后'))
+      expect(text).toContain('稍后')
+      expect(text).toContain('5.0.0')
+    })
+
+    it('因「已提示过」而跳过时有记录——说明这是设计，不是坏了', async () => {
+      const mod = await freshModule()
+      const dataDir = await install(mod, { promptRestart: async () => false })
+
+      // 第一次：正常走完并写入状态。
+      await fireDownloaded('6.0.0')
+      await waitForLog(dataDir, t => t.includes('6.0.0'))
+
+      // 第二次同版本：被 shouldPromptForUpdate 挡下。
+      await fireDownloaded('6.0.0')
+
+      const text = await waitForLog(dataDir, t => t.includes('已经提示过'))
+      expect(text).toContain('已经提示过')
+    })
+
+    it('点「立即重启」的记录会先落盘，再执行安装', async () => {
+      const mod = await freshModule()
+      // 在安装动作发生时同步读日志：此刻那条记录必须已经在文件里，
+      // 否则真机日志会恰好缺掉「用户确实点了重启」这一环。
+      let textAtInstall = ''
+      let dir = ''
+      const original = fake.quitAndInstall
+      const mod2 = mod
+      dir = await install(mod2, {
+        promptRestart: async () => true,
+        beforeInstall: () => {},
+      })
+      fake.quitAndInstall = () => {
+        textAtInstall = existsSync(join(dir, 'update.log'))
+          ? readFileSync(join(dir, 'update.log'), 'utf8')
+          : ''
+        original()
+      }
+
+      await fireDownloaded('7.0.0')
+      fake.quitAndInstall = original
+
+      expect(textAtInstall).toContain('立即重启')
+    })
   })
 })

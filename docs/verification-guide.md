@@ -360,10 +360,39 @@ These four checks can be run right now, and **any failure is a real defect**:
 |---|---|
 | Launch the client normally (installed package) | UI, tray and host connection are **exactly as before**, no different from 0.1.6 |
 | Launch it, then leave it idle for **1 minute** while watching | **No window or dialog ever appears** (including no pointless "you are up to date" notice) |
-| **Launch with the network down** (pull the cable / turn off Wi-Fi) | Still **no error dialog**. Only one line in the terminal/log: `[dsh-remote-client] 检查更新失败（已忽略，不影响使用）：…` |
+| **Launch with the network down** (pull the cable / turn off Wi-Fi) | Still **no error dialog**. Only one line in `update.log`: `检查更新失败（已忽略，不影响使用）…` |
 | Launch in `pnpm dev` development mode | Nothing pops up either. The updater **does not start at all in development mode** (there is no `app-update.yml`, and starting it would only spam error logs) — this is deliberate |
 
-> **Where to read the log**: a packaged build has no terminal window, so where `console.error` output goes depends on how you launch it. The easiest way is to start the installed exe from a command line (or press `Ctrl+Shift+I` first and watch the DevTools Console).
+> **Where to read the log (definitive answer since v0.1.7)**
+>
+> The updater writes its key steps to `update.log` in the **user data directory**, which
+> works for a packaged build too — no command line needed:
+>
+> ```powershell
+> Get-Content "$env:APPDATA\dsh-remote-client\update.log" -Tail 20
+> ```
+>
+> If that path does not exist, locate it with:
+>
+> ```powershell
+> Get-ChildItem $env:APPDATA -Recurse -Filter update.log -ErrorAction SilentlyContinue |
+>   Select-Object FullName
+> ```
+>
+> Each line carries an ISO timestamp:
+>
+> ```
+> 2026-10-11T02:31:07.512Z 更新器启动（当前版本 0.1.7，日志位于 update.log）
+> 2026-10-11T02:31:37.480Z 开始检查更新（当前版本 0.1.7）
+> ```
+>
+> It keeps at most the latest 200 lines (each truncated to 400 characters), so it
+> **cannot grow without bound** and can safely be left in place.
+>
+> Before this log existed, this section said "start the installed exe from a command
+> line, or open the DevTools Console" — which is effectively impossible for an end user,
+> leaving "why did the update do nothing on a real machine?" with no evidence at all.
+> `update.log` is that evidence now.
 
 ### 5.2 After v0.1.8 is published: the full chain (this is the important part)
 
@@ -373,7 +402,7 @@ Run these in order and **look at the result of every step**:
 
 | # | Action | Expected | What a failure means |
 |---|---|---|---|
-| 1 | Confirm you are running **0.1.7**, launch the client and wait about **30 seconds** | The log/Console shows an update check happening | The timer never fired |
+| 1 | Confirm you are running **0.1.7**, launch the client and wait about **30 seconds** | `update.log` shows 「开始检查更新」 (an update check started) — see §5.1 for how to read it | The timer never fired |
 | 2 | Leave it running and wait for the background download to finish | A dialog appears: 「新版本 **0.1.8** 已下载完成，现在重启安装吗？」 with buttons 「立即重启」 / 「稍后」 | The quiet-period/policy logic swallowed the prompt |
 | 3 | **Record the actual number of bytes downloaded** (see below) | Clearly less than 106MB | Differential download did not take effect and it fell back to the whole package |
 | 4 | Click **「立即重启」 (Restart now)** | The app **really does exit**, installs briefly, **reopens by itself**, and the version is now **0.1.8** | ⚠️ See "Known trap" below |
@@ -436,7 +465,7 @@ The following are **known by design**, not bugs:
 - **One trade-off in link routing**: see §3.05 — if an icon points at **another** configured host, the current window loads it but the "current host" does not change.
 - **Unsigned app**: if you package an exe later, Windows Defender / SmartScreen may warn; running in `pnpm dev` development mode does not involve this.
 - **Automatic updates only work in a packaged build**: under `pnpm dev` the updater does not start at all (there is no `app-update.yml`, and starting it would only spam error logs). **So no update behaviour can be verified in development mode** — you must use the installer (see §5).
-- **Every failure in automatic updating is silent**: no network, an unreachable update source or a malformed `latest.yml` all leave just one line in the log and **never show a dialog**. This is deliberate (the user is not waiting for an update, so interrupting them is a net negative) — which means **"nothing happened" is usually correct behaviour**, so do not rush to report it as a defect. To tell whether it is running at all, go and read the log.
+- **Every failure in automatic updating is silent**: no network, an unreachable update source or a malformed `latest.yml` all leave just one line in `update.log` and **never show a dialog**. This is deliberate (the user is not waiting for an update, so interrupting them is a net negative) — which means **"nothing happened" is usually correct behaviour**, so do not rush to report it as a defect. To tell whether it is running at all, read `update.log` (§5.1 shows how): it separates "there genuinely is no new version" from "it failed silently", which is exactly why the log exists.
 - **Only prompting once is not forgetfulness**: once the user has been asked about a version, it is never asked again (the state lives in `userData/update-state.json`). If you want to see the dialog again, delete that file.
 - **Versions 0.1.6 and earlier do not auto-update**: there is no updater in them. They must be **manually upgraded to 0.1.7 once**, after which they are on the automatic update path.
 - **Uninstalling keeps `update-state.json`**: it is kept along with the other user data (uninstalling does not clear `userData`). The "already prompted version" therefore carries over after a reinstall, which is deliberate.
