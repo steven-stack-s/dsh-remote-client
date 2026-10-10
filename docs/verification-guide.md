@@ -22,7 +22,7 @@ This development environment is a GUI-less Linux container, so the following **c
 **If all you want to verify is "can the client be used", you do not need any development environment** — the installer has already been built:
 
 ```
-release/DSH Remote Client-<版本>-setup.exe   （约 106MB，自带 Electron 运行时）
+release/DSH.Remote.Client-<version>-setup.exe   (about 106MB, Electron runtime bundled in)
 ```
 
 `<版本>` is the version of the copy you obtained (see the filename or the Release
@@ -39,13 +39,16 @@ the matching GitHub Release notes (CI prints it during the build). It is deliber
 go stale — and a stale hash is worse than none, because it makes people think they
 downloaded the wrong file.
 
-> When downloading from the Release page, **GitHub rewrites the spaces in the asset
-> name into dots** (`DSH Remote Client-…` → `DSH.Remote.Client-…`) — **the file
-> contents and the SHA256 are unaffected**.
+> **From v0.1.8 the artifact name is fixed at `DSH.Remote.Client-<version>-setup.exe`**
+> (dot-separated, no spaces), so a local build and the Release asset carry **exactly the
+> same name**.
 >
-> A local build (`./scripts/build-windows.sh`) produces the **space-separated** name
-> under `release/` instead; such packages are not published to a Release, so compare
-> against whatever your local build printed.
+> v0.1.7 and earlier were different: `artifactName` used `${productName}`, and
+> `productName` contains spaces, so one package ended up with three different names
+> (spaces on disk, hyphens in `latest.yml`, dots on the GitHub asset). That is what made
+> v0.1.7's auto-update 404 — the updater looks for the name in `latest.yml`, while the
+> Release only had the dotted one. See the comment above `artifactName` in
+> `electron-builder.yml`.
 
 Double-click to install (no administrator privileges needed), then jump straight to §1.
 

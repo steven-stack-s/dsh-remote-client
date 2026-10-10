@@ -85,7 +85,7 @@ pnpm dev         # 启动客户端（需要图形环境）
 
 ### 给最终用户
 
-下载 `DSH Remote Client-<版本>-setup.exe`，双击安装即可。
+下载 `DSH.Remote.Client-<版本>-setup.exe`，双击安装即可。
 
 **不需要安装 Node、pnpm 或任何运行环境** —— Electron 运行时已打进安装包（约 106MB）。
 
@@ -105,9 +105,9 @@ pnpm dev         # 启动客户端（需要图形环境）
 
 | 文件 | 给谁用 | 要下载吗 |
 |---|---|---|
-| `DSH Remote Client-<版本>-setup.exe` | **给人用**的安装包 | ✅ 需要 |
+| `DSH.Remote.Client-<版本>-setup.exe` | **给人用**的安装包 | ✅ 需要 |
 | `latest.yml` | 更新器用：记录最新版本号 | ❌ 不用，**也不要删** |
-| `DSH Remote Client-<版本>-setup.exe.blockmap` | 更新器用：块索引，据此算出只需下载哪几块 | ❌ 不用，**也不要删** |
+| `DSH.Remote.Client-<版本>-setup.exe.blockmap` | 更新器用：块索引，据此算出只需下载哪几块 | ❌ 不用，**也不要删** |
 
 `latest.yml` 让已装的客户端知道「有新版了、新包叫什么名字」，`.blockmap` 让它知道「这个新包里哪几块变了」——两者缺一，自动更新就会失效或退化成重下整个 106MB 的安装包。
 
@@ -139,8 +139,8 @@ git tag v0.1.0 && git push origin v0.1.0
 产物在 `release/` 下：
 
 ```
-release/DSH Remote Client-<版本>-setup.exe          安装包（给用户）
-release/DSH Remote Client-<版本>-setup.exe.blockmap 差分块索引（给更新器）
+release/DSH.Remote.Client-<版本>-setup.exe          安装包（给用户）
+release/DSH.Remote.Client-<版本>-setup.exe.blockmap 差分块索引（给更新器）
 release/latest.yml                                  版本清单（给更新器）
 ```
 

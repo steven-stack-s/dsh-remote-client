@@ -48,7 +48,27 @@ win:
         - x64
   # 未签名：最终用户首次运行会看到 SmartScreen 警告（见 README「安装与分发」）。
   # 若要消除，需配置证书：在配置里补 certificateFile / certificatePassword。
-  artifactName: ${productName}-${version}-setup.${ext}
+  #
+  # ⚠️ **这个名字必须不含空格，否则自动更新必然 404。**
+  #
+  # 不能写 `${productName}`：`productName` 是 `DSH Remote Client`（含空格），而空格
+  # 在三个地方被三种规则改写，最后三方各不相同：
+  #   1. 磁盘文件名 —— 保持原样：`DSH Remote Client-0.1.7-setup.exe`
+  #   2. latest.yml 的 url —— electron-builder 的 `computeSafeArtifactNameIfNeeded`
+  #      见名字不是「GitHub 安全」就把空格换成连字符：
+  #      `DSH-Remote-Client-0.1.7-setup.exe`
+  #   3. GitHub 附件名 —— 上传时 GitHub 自己把空格换成点：
+  #      `DSH.Remote.Client-0.1.7-setup.exe`
+  # 更新器按 (2) 去下载，而 Release 里只有 (3) → **404，更新永远失败**。
+  # 这个缺陷本地测试与 CI 都发现不了（都不会真去下载更新包），只在真机暴露，
+  # v0.1.7 首次发布时才由人工核对 `latest.yml` 与附件名抓出来。
+  #
+  # 显式写成不含空格的形式后，`isSafeGithubName` 直接通过，
+  # `computeSafeArtifactNameIfNeeded` 返回 null、不再改写，于是
+  # 「磁盘名 = latest.yml 里的 url = GitHub 附件名」三者必然一致。
+  # 点号形式是刻意选的：它正是 GitHub 过去对含空格名字改写后的样子，
+  # 用户已经见过，且与历史版本的下载名保持连续。
+  artifactName: DSH.Remote.Client-${version}-setup.${ext}
 
 nsis:
   # 面向最终用户的安装体验：

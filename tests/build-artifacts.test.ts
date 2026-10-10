@@ -165,4 +165,36 @@ describe('差分更新产物', () => {
     // 出现过两次：Artifacts 一次、Release 一次。少任何一处都会让对应通道失效。
     expect(ci.match(/latest\.yml/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
   })
+
+  it('artifactName 不含空格（否则 latest.yml 指向的名字 404，自动更新必然失败）', async () => {
+    const config = await readFile(join(root, 'electron-builder.yml'), 'utf8')
+
+    // 这条断言守的是一个**真实发生过**的缺陷，不是假想：
+    //
+    // 曾用 `artifactName: ${productName}-${version}-setup.${ext}`，而 productName 是
+    // `DSH Remote Client`（含空格）。于是同一个包在三个地方有三个名字：
+    //   磁盘文件名      `DSH Remote Client-0.1.7-setup.exe`  （原样保留空格）
+    //   latest.yml url  `DSH-Remote-Client-0.1.7-setup.exe`  （electron-builder 把空格换成连字符）
+    //   GitHub 附件名   `DSH.Remote.Client-0.1.7-setup.exe`  （GitHub 上传时把空格换成点）
+    // 更新器按 latest.yml 的名字去下载，Release 里只有点号那个 → **404**。
+    //
+    // 它躲过了 350 项测试与 typecheck：没有任何测试会真的去下载更新包，只有人工
+    // 核对「latest.yml 里的 url 与 Release 附件名」才抓得到。所以这条断言直接把
+    // 根因（配置里有空格）钉死在这里。
+    const match = config.match(/^\s*artifactName:\s*(.+?)\s*$/m)
+    expect(match, 'electron-builder.yml 里应当有 artifactName').not.toBeNull()
+    // 用 ?? '' 兜底而不是 match![1]：非空断言只在表达式上生效，赋给变量后
+    // 类型仍是 string | undefined。断言已在上方保证非 null，这里取不到值
+    // 时下面的断言会失败并给出可读信息，不会静默放过。
+    const artifactName = match?.[1] ?? ''
+
+    // 展开成真实产物名的形态再判定：把 ${...} 宏当作不含空格的值替换掉，
+    // 剩下的字面部分若含空格，就是会把三处名字撕裂的那个空格。
+    const literal = artifactName.replace(/\$\{[^}]*\}/g, 'X')
+    expect(literal, `artifactName 不能含空格（当前：${artifactName}）`).not.toMatch(/\s/)
+
+    // 并明确要求它不要再依赖 ${productName}——那个宏的值带空格，一旦有人"优化"
+    // 成 `${productName}` 就会把缺陷带回来。
+    expect(artifactName).not.toContain('${productName}')
+  })
 })

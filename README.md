@@ -89,7 +89,7 @@ Reading the Chinese comments in that block: `pnpm test` = build + all tests (inc
 
 ### For end users
 
-Download `DSH Remote Client-<version>-setup.exe` and double-click to install.
+Download `DSH.Remote.Client-<version>-setup.exe` and double-click to install.
 
 **No Node, pnpm or any other runtime needs to be installed** — the Electron runtime is already bundled into the installer (about 106MB).
 
@@ -109,9 +109,9 @@ Each release carries three files:
 
 | File | Who it is for | Download? |
 |---|---|---|
-| `DSH Remote Client-<version>-setup.exe` | The installer, **for people** | ✅ Yes |
+| `DSH.Remote.Client-<version>-setup.exe` | The installer, **for people** | ✅ Yes |
 | `latest.yml` | For the updater: records the latest version | ❌ No — and **do not delete it** |
-| `DSH Remote Client-<version>-setup.exe.blockmap` | For the updater: a block index used to work out which blocks changed | ❌ No — and **do not delete it** |
+| `DSH.Remote.Client-<version>-setup.exe.blockmap` | For the updater: a block index used to work out which blocks changed | ❌ No — and **do not delete it** |
 
 `latest.yml` tells an installed client "there is a new version, and here is what the new package is called"; the `.blockmap` tells it "these are the blocks that changed". With either one missing, automatic updates either stop working altogether or degrade into re-downloading the whole 106MB installer.
 
@@ -141,8 +141,8 @@ This script codifies the four pitfalls actually hit when cross-building a Window
 The artifacts land in `release/`:
 
 ```
-release/DSH Remote Client-<version>-setup.exe          the installer (for users)
-release/DSH Remote Client-<version>-setup.exe.blockmap the differential block index (for the updater)
+release/DSH.Remote.Client-<version>-setup.exe          the installer (for users)
+release/DSH.Remote.Client-<version>-setup.exe.blockmap the differential block index (for the updater)
 release/latest.yml                                     the version manifest (for the updater)
 ```
 

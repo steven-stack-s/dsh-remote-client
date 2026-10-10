@@ -20,7 +20,7 @@
 **如果你只想验证"客户端能不能用"，不需要装任何开发环境** —— 安装包已构建完成：
 
 ```
-release/DSH Remote Client-<版本>-setup.exe   （约 106MB，自带 Electron 运行时）
+release/DSH.Remote.Client-<版本>-setup.exe   （约 106MB，自带 Electron 运行时）
 ```
 
 `<版本>` 就是你拿到的那一份的版本号（见文件名或 Release 标题）——**这里刻意
@@ -32,11 +32,14 @@ release/DSH Remote Client-<版本>-setup.exe   （约 106MB，自带 Electron �
 刻意不把哈希写死在这里——它是**跟着每个构建变**的，写死就必然会过期，
 而过期的哈希比没有哈希更糟（会让人以为下错了包）。
 
-> 从 Release 页下载时，资产名里的**空格会被 GitHub 改写成点**
-> （`DSH Remote Client-…` → `DSH.Remote.Client-…`）——**文件内容与 SHA256 不受影响**。
+> **产物名从 v0.1.8 起固定为 `DSH.Remote.Client-<版本>-setup.exe`**（点号分隔、
+> 不含空格），本地构建与 Release 上的名字**完全一致**。
 >
-> 本地构建（`./scripts/build-windows.sh`）产出的是 `release/` 下**带空格**的那个名字，
-> 这类包不在 Release 里，按你本地构建时脚本打印的值核对即可。
+> v0.1.7 及更早不是这样：那时的 `artifactName` 用了 `${productName}`，而
+> `productName` 含空格，于是同一个包在三个地方有三个名字（磁盘上带空格、
+> `latest.yml` 里是连字符、GitHub 附件是点号）。这直接导致 v0.1.7 的自动更新
+> 下载 404——更新器按 `latest.yml` 里的名字去找，Release 里却只有点号那个。
+> 详见 `electron-builder.yml` 里 `artifactName` 上方的注释。
 
 双击安装（不需要管理员权限），然后直接跳到 §1。
 
