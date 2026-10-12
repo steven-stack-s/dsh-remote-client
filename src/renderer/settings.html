@@ -97,6 +97,18 @@
         </p>
       </div>
 
+      <h2>窗口</h2>
+
+      <div class="row">
+        <input type="checkbox" id="openInNewWindow" />
+        <label for="openInNewWindow">跨主机跳转时开新窗口</label>
+        <p class="desc">
+          在门户里点另一台 dsh 主机、或从一个主机跳到另一个主机时，新开一个窗口
+          （原来的做法是替换当前窗口）。<strong>站内跳转不受影响</strong>——
+          打开会话、切换对话仍留在原窗口里。
+        </p>
+      </div>
+
       <h2>更新</h2>
 
       <div class="row">
@@ -126,6 +138,7 @@
       const startupBehavior = document.getElementById('startupBehavior')
       const hideOnClose = document.getElementById('hideOnClose')
       const updateCheckEnabled = document.getElementById('updateCheckEnabled')
+      const openInNewWindow = document.getElementById('openInNewWindow')
 
       // 与 src/shared/settings.ts 的常量保持一致。这里重复一份是因为该模块
       // 用的是 ESM 导出，而本页是 file:// 下的普通 script（无打包器）——
@@ -151,6 +164,7 @@
         startupBehavior.value = settings.startupBehavior
         hideOnClose.checked = settings.hideOnClose
         updateCheckEnabled.checked = settings.updateCheckEnabled
+        openInNewWindow.checked = settings.openInNewWindow
       }
 
       form.addEventListener('submit', async event => {
@@ -170,6 +184,7 @@
           startupBehavior: startupBehavior.value,
           hideOnClose: hideOnClose.checked,
           updateCheckEnabled: updateCheckEnabled.checked,
+          openInNewWindow: openInNewWindow.checked,
         })
         if (!result.ok) {
           err.textContent = result.message

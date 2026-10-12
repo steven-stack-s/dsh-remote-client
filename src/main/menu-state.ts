@@ -104,21 +104,26 @@ export function canRemoveHost(hostExists: boolean): boolean {
 }
 
 /**
- * 删除某主机后，是否应关闭当前主机窗口。
+ * 删除某主机后，是否应关闭它的窗口。
  *
- * 仅当被删主机**正是当前打开的那台**时才需要处理——窗口承载的是该主机的
+ * 仅当被删主机**自己有一个打开的窗口**时才需要处理——窗口承载的是该主机的
  * 会话，配置里已经没有它，继续留在屏幕上会让托盘/菜单里的主机列表与
- * 实际窗口不一致（用户会以为没删掉）。删其他主机时当前窗口不受影响。
+ * 实际窗口不一致（用户会以为没删掉）。
+ *
+ * **task-19 起参数从「当前主机 id」改成「所有已打开主机的 id 集合」**：多窗口下
+ * 「删除的是不是当前那台」这个判据不再够用——用户完全可能删掉一台**没开着**的
+ * 主机，此时按旧判据会去关「当前窗口」，把用户正在看的那台关掉（张冠李戴）。
+ * 正确判据是「被删的那台**自己**有没有窗口」，与哪台是「当前」无关。
  *
  * @param removedId - 被删除的主机 id。
- * @param currentHostId - 当前打开的主机 id。
- * @returns 应关闭当前窗口时返回 true。
+ * @param openHostIds - 当前已打开窗口的主机 id 集合。
+ * @returns 应关闭该主机的窗口时返回 true。
  */
 export function shouldCloseWindowAfterRemove(
   removedId: string,
-  currentHostId: string | undefined,
+  openHostIds: readonly string[],
 ): boolean {
-  return currentHostId !== undefined && removedId === currentHostId
+  return openHostIds.includes(removedId)
 }
 
 /** 「编辑(E)」菜单里的一项（分隔符也是一种项，顺序即显示顺序）。 */
@@ -299,35 +304,6 @@ export function trayMenuLayout(): readonly TrayMenuEntry[] {
   // 菜单栏根本不显示，托盘是该平台上唯一可视的入口。这与 `editHost` 回到托盘是
   // 同一个理由——见上面那段历史。
   return ['open', 'separator', 'hosts', 'addHost', 'editHost', 'separator', 'settings', 'separator', 'quit']
-}
-
-/** 「打开客户端」时应对哪个窗口下手。 */
-export type TrayOpenAction =
-  /** 唤起已存在的窗口（可能是隐藏/最小化的主机窗口）。 */
-  | 'show'
-  /** 一个窗口都没有，但还有当前主机 → 重新打开它。 */
-  | 'reopen'
-  /** 连当前主机都没有（例如刚删光主机）→ 打开欢迎页。 */
-  | 'welcome'
-
-/**
- * 点击托盘「打开客户端」时该做什么。
- *
- * 托盘是「关窗后驻留」这条语义的出口：主机窗口在非 darwin 平台关窗时只是被
- * **隐藏**（见 `lifecycle.ts`），所以正常情况总能 `show` 回来；只有窗口真的被
- * 销毁过（改地址、删主机、macOS 关窗）才会走 `reopen` / `welcome`。
- *
- * @param input - 判定输入。
- * @returns 应执行的动作。
- */
-export function trayOpenAction(input: {
-  /** 当前是否存在任何应用窗口（含隐藏的）。 */
-  hasWindow: boolean
-  /** 配置里是否还有「当前主机」。 */
-  hasCurrentHost: boolean
-}): TrayOpenAction {
-  if (input.hasWindow) return 'show'
-  return input.hasCurrentHost ? 'reopen' : 'welcome'
 }
 
 /** 托盘图标变体。 */
@@ -548,8 +524,14 @@ export function shouldRemoveWindowMenuBar(platform: string): boolean {
   return platform !== 'darwin'
 }
 
-/** 页面发起打开新窗口时，该怎么处理。 */
-export type WindowOpenDecision = 'navigate-self' | 'external'
+/**
+ * 页面发起打开新窗口时，该怎么处理。
+ *
+ * `'open-new-window'` 是 task-19 新增的：指向**另一台已配置主机**的链接按用户
+ * 设置开成新窗口（多主机并行）。站内链接永远走 `'navigate-self'`——否则在 dsh
+ * 里点任何一个会话都会弹出一个新窗口。
+ */
+export type WindowOpenDecision = 'navigate-self' | 'open-new-window' | 'external'
 
 /**
  * 安全地解析 URL。
@@ -605,18 +587,26 @@ function comparableOrigin(value: string): string | undefined {
  * 2. 非 `http:`/`https:`（`mailto:`、`tel:`、自定义 scheme、`file:`、`javascript:`）
  *    → `external`。**`file:`/`javascript:` 属于安全边界**：远端页面不该借我们的手
  *    在应用内打开本地文件或执行脚本；
- * 3. 目标 origin ∈ `knownHostOrigins` → **`navigate-self`**：这就是用户在门户里点
- *    dsh 图标的情形，要在**当前窗口**里打开（替换原窗口，而不是再开一个）；
- * 4. 目标 origin === `currentOrigin` → **`navigate-self`**：站点内部跳转，跑到系统
- *    浏览器去会让「在客户端里用 dsh」在点第二个链接时断掉；
+ * 3. 目标 origin === `currentOrigin` → **`navigate-self`**：站点内部跳转。这一条
+ *    **先于**「跨主机」判定，因为站内链接无论开关如何都不该开新窗口——否则在 dsh
+ *    里点任何一个会话都会弹出一个新窗口；
+ * 4. 目标 origin ∈ `knownHostOrigins` → 这是**跨主机跳转**（门户里的 dsh 图标、
+ *    或从 A 主机跳到 B 主机）：
+ *    - 开关**关** → `navigate-self`（task-18 的既有行为：替换当前窗口）；
+ *    - 开关**开** → `open-new-window`（task-19：多主机并行）；
  * 5. 其余 → `external`：真正的外链（GitHub 等）交给默认浏览器。
  *
+ * **为什么第 3 条必须排在第 4 条前面**：一台主机的 origin 同时满足「∈ 已配置
+ * 主机」和「=== currentOrigin」（它当然在配置里，而用户正在用它）。若先判第 4 条，
+ * 站内链接会被判成「跨主机」并开新窗口——这正是「每个会话都弹一个窗口」的成因。
+ *
  * `currentOrigin` 传空串表示**取不到当前页面 origin**（还没提交任何导航、或者当前
- * 是壳自有的 `file://` 页面如离线页）。此时第 4 条不参与判定——不能因为「取不到」
+ * 是壳自有的 `file://` 页面如离线页）。此时第 3 条不参与判定——不能因为「取不到」
  * 就把所有链接都当成站内链接。
  *
  * @param input - 判定输入。
- * @returns `'navigate-self'` 表示在当前窗口导航，`'external'` 表示交给系统浏览器。
+ * @returns `'navigate-self'` 在当前窗口导航，`'open-new-window'` 另开一个主机窗口，
+ *   `'external'` 交给系统浏览器。
  */
 export function windowOpenDecision(input: {
   /** 页面请求打开的地址。 */
@@ -625,6 +615,15 @@ export function windowOpenDecision(input: {
   currentOrigin: string
   /** 已配置主机的 origin 列表（由主进程注入，见 `createHostWindow`）。 */
   knownHostOrigins: readonly string[]
+  /**
+   * 用户设置：跨主机跳转是否开新窗口。
+   *
+   * **可选、缺省 false**（与本模块其它「宁可必填」的地方刻意不同）：
+   * 缺省值恰好等于 task-18 的既有行为，而钉住那个行为的既有断言本来就不传本字段
+   * ——让它们原样通过，比改写更能证明兼容。且 `false` 是安全默认：用户没要求时
+   * 宁可替换当前窗口，也不要开出一堆窗口。
+   */
+  openInNewWindow?: boolean
 }): WindowOpenDecision {
   const parsed = safeUrl(input.url)
   if (parsed === undefined) return 'external'
@@ -634,12 +633,15 @@ export function windowOpenDecision(input: {
   const target = comparableOrigin(parsed.origin)
   if (target === undefined) return 'external'
 
-  for (const origin of input.knownHostOrigins) {
-    if (comparableOrigin(origin) === target) return 'navigate-self'
-  }
+  // 第 3 条：站内链接优先。必须先于跨主机判定——见上面的说明。
+  const current = input.currentOrigin === '' ? undefined : comparableOrigin(input.currentOrigin)
+  if (current !== undefined && current === target) return 'navigate-self'
 
-  if (input.currentOrigin !== '' && comparableOrigin(input.currentOrigin) === target) {
-    return 'navigate-self'
+  // 第 4 条：跨主机跳转。
+  for (const origin of input.knownHostOrigins) {
+    if (comparableOrigin(origin) === target) {
+      return input.openInNewWindow === true ? 'open-new-window' : 'navigate-self'
+    }
   }
 
   return 'external'

@@ -27,26 +27,33 @@ describe('canRemoveHost', () => {
   })
 })
 
-describe('shouldCloseWindowAfterRemove', () => {
-  it('删除的正是当前主机 → 应关闭窗口', () => {
-    expect(shouldCloseWindowAfterRemove('host-a', 'host-a')).toBe(true)
+describe('shouldCloseWindowAfterRemove（task-19：多窗口版）', () => {
+  it('被删主机有打开的窗口 → 应关闭它', () => {
+    expect(shouldCloseWindowAfterRemove('host-a', ['host-a', 'host-b'])).toBe(true)
   })
 
-  it('删除的是其他主机 → 当前窗口不受影响', () => {
-    expect(shouldCloseWindowAfterRemove('host-b', 'host-a')).toBe(false)
+  it('被删主机没有窗口 → 不关任何窗口（别误伤正在用的那台）', () => {
+    // 多窗口下这是新增的关键情形：用户可能删掉一台**没开着**的主机，
+    // 此时若按「关掉当前窗口」处理，会把用户正在看的那台关掉。
+    expect(shouldCloseWindowAfterRemove('host-a', ['host-b', 'host-c'])).toBe(false)
   })
 
-  it('当前没有打开任何主机 → 无需关闭', () => {
-    expect(shouldCloseWindowAfterRemove('host-a', undefined)).toBe(false)
+  it('没有任何窗口 → false', () => {
+    expect(shouldCloseWindowAfterRemove('host-a', [])).toBe(false)
   })
 
-  it('当前主机为 undefined 时永不为 true（避免误关无关窗口）', () => {
-    expect(shouldCloseWindowAfterRemove('', undefined)).toBe(false)
-    expect(shouldCloseWindowAfterRemove('anything', undefined)).toBe(false)
+  it('只删有窗口的那台时，其它主机的窗口不受影响（判定与该集合里其它 id 无关）', () => {
+    expect(shouldCloseWindowAfterRemove('host-b', ['host-a', 'host-b'])).toBe(true)
+    expect(shouldCloseWindowAfterRemove('host-c', ['host-a', 'host-b'])).toBe(false)
   })
 
-  it('只有 id 完全相等才关闭（不做前缀/包含匹配）', () => {
-    expect(shouldCloseWindowAfterRemove('host-a', 'host-ab')).toBe(false)
-    expect(shouldCloseWindowAfterRemove('host-ab', 'host-a')).toBe(false)
+  it('只有 id 完全相等才算命中（不做前缀/包含匹配）', () => {
+    expect(shouldCloseWindowAfterRemove('host-a', ['host-ab'])).toBe(false)
+    expect(shouldCloseWindowAfterRemove('host-ab', ['host-a'])).toBe(false)
+  })
+
+  it('空串永远不会命中（防御未初始化状态）', () => {
+    expect(shouldCloseWindowAfterRemove('', [''])).toBe(true)  // 集合里真有空串才命中
+    expect(shouldCloseWindowAfterRemove('', ['host-a'])).toBe(false)
   })
 })

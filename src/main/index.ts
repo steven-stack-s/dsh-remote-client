@@ -8,12 +8,17 @@ import {
   hostAfterEditEffect,
   shouldCloseWindowAfterRemove,
   shouldQuitOnAllWindowsClosed,
-  trayOpenAction,
 } from './menu-state.js'
+import {
+  findHostWindowByWebContents,
+  focusTargetFor,
+  isKnownHostWebContents,
+  type OpenHostWindowRef,
+} from './window-registry.js'
 import { hostIdFromOrigin } from './partitions.js'
 import { applyHostEdit } from '../shared/host-edit.js'
 import { needsRestartFor } from './restart.js'
-import { insecureOriginsSwitchValue } from '../shared/origin.js'
+import { insecureOriginsSwitchValue, normalizeOrigin } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
 import { parseThemeSource } from '../shared/desktop-shell.js'
 import { createNotifier, createQuietGate, parseNotifyRequest, type NotifyContext } from './notifications.js'
@@ -65,12 +70,41 @@ if (insecureValue !== '') {
  */
 const startupEffectiveOrigins: readonly string[] = earlyHosts.hosts.map(h => h.origin)
 
-/** 当前打开的主机窗口；切换主机时关闭旧的，避免并存两份 WebSocket。 */
-let currentWindow: HostWindowHandle | undefined
+/**
+ * 已打开的主机窗口，**按 host id 索引**。
+ *
+ * task-19 之前这里是两个标量（`currentWindow` / `currentHostId`），语义是
+ * 「同一时刻只有一台主机窗口」。放开「跨主机跳转开新窗口」后，同一时刻可能有
+ * 多台，于是改成 Map。
+ *
+ * 保留的不变量：**同一个 host 至多一个窗口**（`openHost` 命中既有窗口时只
+ * update + show）。这条不变量是必要的——同一个 origin 并存两个窗口会有两份
+ * WebSocket 连到同一台 dsh，既浪费又会让页面状态互相打架。
+ */
+const hostWindows = new Map<string, HostWindowHandle>()
 
-/** 内存中的配置镜像，托盘与窗口共用；写盘后同步更新。 */
+/**
+ * 最后聚焦过的主机 id —— 多窗口下「当前主机」的定义。
+ *
+ * 菜单的 ● 标记、托盘与菜单栏的「重新加载/立即重试/编辑主机…」都以它为目标。
+ * 多窗口下本就没有唯一的「当前」，取**最后聚焦**的那台是最符合直觉的近似：
+ * 用户刚操作过哪个窗口，哪个就是他要操作的对象。
+ *
+ * 它可能指向一个**已关闭**的窗口（窗口关闭时不做清理），因此每处使用都必须
+ * 容忍「这台已经不在 `hostWindows` 里」。刻意不清空：清空会让「关掉 B 但
+ * A 还开着」时丢掉用户上次的落点，而容忍一个失效 id 的成本只是一次 find 落空。
+ */
+let lastFocusedHostId: string | undefined
+
+/**
+ * 内存中的配置镜像，托盘与窗口共用；写盘后同步更新。
+ */
 let hostsData: HostsFile = { version: 1, hosts: [] }
-let currentHostId: string | undefined
+
+/** 兼容别名：多数调用点只关心「上次的主机」，语义见 `lastFocusedHostId`。 */
+function getCurrentHostId(): string | undefined {
+  return lastFocusedHostId
+}
 let tray: TrayHandle | undefined
 
 /**
@@ -138,17 +172,66 @@ const notifier = createNotifier({
 })
 
 /**
- * 当前主机窗口的 webContents id；无窗口或窗口已销毁时为 undefined。
+ * 所有存活的主机窗口的 `{ hostId, webContentsId }` 快照。
  *
- * 通知 IPC 用它校验 sender（与 `shell:restart` / `shell:edit:*` 同一模式）。
- * 这里用「当前主机窗口」而非 id 集合：主机窗口随切换被销毁重建，
- * 用一个可随时求值的判定比维护集合更不容易漏删。
+ * **每次现取、并顺手剔除已销毁的窗口**：窗口的 `closed` 事件与 Map 的清理之间
+ * 可能存在极短的空窗（事件在下一个 tick 才跑），而过期的 id 会让 sender 校验
+ * 放行一个已经不存在的窗口。现取 + 过滤比维护一套精确的订阅更不容易漏。
  *
- * @returns 当前主机窗口的 webContents id，无则 undefined。
+ * @returns 当前有效的主机窗口引用。
  */
-function hostWebContentsId(): number | undefined {
-  if (currentWindow === undefined || currentWindow.win.isDestroyed()) return undefined
-  return currentWindow.win.webContents.id
+function liveHostWindowRefs(): OpenHostWindowRef[] {
+  const refs: OpenHostWindowRef[] = []
+  for (const [hostId, handle] of hostWindows) {
+    if (handle.win.isDestroyed()) continue
+    refs.push({ hostId, webContentsId: handle.win.webContents.id })
+  }
+  return refs
+}
+
+/**
+ * 某个 sender 是否属于任一已登记的主机窗口。
+ *
+ * 取代了 task-19 之前的 `hostWebContentsId()`：那个实现只认**单个**窗口，
+ * 而多窗口下 B 窗口的所有上报（网络恢复、主题、通知）都会被静默丢弃——
+ * 不报错、不提示，只是「功能在第二台主机上不工作」。
+ *
+ * @param senderId - IPC 事件的 `event.sender.id`。
+ * @returns 属于任一已登记主机窗口时返回 true。
+ */
+function isHostSender(senderId: number): boolean {
+  return isKnownHostWebContents(liveHostWindowRefs(), senderId)
+}
+
+/**
+ * 由 sender id 找出它属于哪台主机窗口。
+ *
+ * `shell:notify` 用它把「发送方那一台」找出来：通知标题要用**那一台**的主机名、
+ * 点击要唤起**那一台**——取「当前主机」会让 B 窗口的通知显示 A 的名字、点了跳到 A。
+ *
+ * @param senderId - IPC 事件的 `event.sender.id`。
+ * @returns 对应的主机窗口句柄；不属于任何主机窗口时 undefined。
+ */
+function hostWindowOf(senderId: number): HostWindowHandle | undefined {
+  const ref = findHostWindowByWebContents(liveHostWindowRefs(), senderId)
+  return ref === undefined ? undefined : hostWindows.get(ref.hostId)
+}
+
+/**
+ * 「当前主机窗口」——最后聚焦的那一台。
+ *
+ * 多窗口下这是一个**近似**（见 `lastFocusedHostId` 的说明），只用于那些
+ * 天生「作用于当前那台」的入口：托盘的重载/重试、菜单的 ● 标记。
+ * **它可能是 undefined**（那台已关、或从未打开），所有调用方都必须容忍。
+ *
+ * @returns 当前主机窗口句柄，无则 undefined。
+ */
+function currentHostWindow(): HostWindowHandle | undefined {
+  const id = lastFocusedHostId
+  if (id === undefined) return undefined
+  const handle = hostWindows.get(id)
+  if (handle === undefined || handle.win.isDestroyed()) return undefined
+  return handle
 }
 
 /**
@@ -236,14 +319,14 @@ function openEditWindow(host: HostEntry): void {
  * 在还剩好几台主机时完全没有编辑入口。
  */
 function openEditCurrentHost(): void {
-  const host = hostsData.hosts.find(h => h.id === currentHostId) ?? hostsData.hosts[0]
+  const host = hostsData.hosts.find(h => h.id === getCurrentHostId()) ?? hostsData.hosts[0]
   if (host === undefined) return
   openEditWindow(host)
 }
 
 /** 删除当前主机（复用与托盘一致的确认框路径）。 */
 function removeCurrentHost(): void {
-  const host = hostsData.hosts.find(h => h.id === currentHostId)
+  const host = hostsData.hosts.find(h => h.id === getCurrentHostId())
   if (host === undefined) return
   void requestRemoveHost(host)
 }
@@ -265,45 +348,70 @@ function refreshChrome(): void {
  * 「打开客户端」（托盘菜单项）。
  *
  * 顺序：先唤起任何已存在的窗口（主机窗口在非 darwin 平台关窗后只是被**隐藏**，
- * 所以正常情况都能唤醒）；一个窗口都没有时才按当前主机重开；连当前主机都没有
+ * 所以正常情况都能唤醒）；一个窗口都没有时才按上次的主机重开；连主机都没有
  * （例如刚删光主机）则打开欢迎页——绝不能出现「点了没反应」。
  *
- * 该做什么由 `menu-state.ts` 的 `trayOpenAction` 纯函数判定（有单测），
- * 这里只负责执行。
+ * 该做什么由 `window-registry.ts` 的 `focusTargetFor` 纯函数判定（有单测），
+ * 这里只负责执行。task-19 换掉了原来基于 `trayOpenAction` 的判定：多窗口下
+ * 多出「记得的那台可能已经关了」这个情况，它的失败形态正是「什么都不做」——
+ * 因此新判定的每个分支都被测试钉住。
  */
 function openClient(): void {
-  const currentHost = hostsData.hosts.find(h => h.id === currentHostId)
   const windows = BrowserWindow.getAllWindows().filter(win => !win.isDestroyed())
 
-  const action = trayOpenAction({
-    hasWindow: windows.length > 0,
-    hasCurrentHost: currentHost !== undefined,
+  const target = focusTargetFor({
+    openHostIds: [...hostWindows.keys()],
+    lastFocusedId: lastFocusedHostId,
+    fallbackWindowExists: windows.length > 0,
   })
 
-  if (action === 'show') {
-    // 优先唤起主机窗口（用户要看的往往是它），否则退到任意一个窗口。
-    const target = (hasHostWindow() ? currentWindow?.win : undefined) ?? windows[0]
-    if (target !== undefined) {
-      // 最小化的窗口 `show()` 不一定能还原，显式 restore 一次。
-      if (target.isMinimized()) target.restore()
-      target.show()
-      target.focus()
+  if (target.kind === 'host') {
+    const handle = hostWindows.get(target.hostId)
+    // 判定时还在、执行时已被关掉（用户可能刚好点了关闭）→ 退到任意窗口，
+    // 而不是静默 return。这一层兜底是必要的：`focusTargetFor` 拿到的是快照。
+    if (handle !== undefined && !handle.win.isDestroyed()) {
+      showWindow(handle.win)
+      return
     }
+    if (windows[0] !== undefined) showWindow(windows[0])
     return
   }
 
-  if (action === 'reopen' && currentHost !== undefined) {
-    openHost(currentHost)
+  if (target.kind === 'any') {
+    if (windows[0] !== undefined) showWindow(windows[0])
     return
   }
 
-  // 一个窗口都没有，且没有当前主机可开 → 欢迎页（用户能据此添加主机）。
+  if (target.kind === 'reopen') {
+    const host = hostsData.hosts.find(h => h.id === target.hostId)
+    if (host !== undefined) {
+      openHost(host)
+      return
+    }
+    // 上次的主机已被删除 → 落到欢迎页（用户能据此重新添加）。
+  }
+
   openWelcomeWindow()
+}
+
+/**
+ * 唤起并聚焦一个窗口。
+ *
+ * 最小化的窗口 `show()` 不一定能还原，因此显式 `restore()` 一次——这是既有
+ * `openClient` 里就有的处理，抽出来供多窗口的各个分支共用。
+ *
+ * @param win - 目标窗口。
+ */
+function showWindow(win: BrowserWindow): void {
+  if (win.isDestroyed()) return
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
 }
 
 /** 当前是否有可用的主机窗口。 */
 function hasHostWindow(): boolean {
-  return currentWindow !== undefined && !currentWindow.win.isDestroyed()
+  return liveHostWindowRefs().length > 0
 }
 
 /**
@@ -314,23 +422,30 @@ let quitting = false
 
 /**
  * 打开一台主机。若该主机窗口已存在（可能被隐藏），直接唤起而不重建，
- * 避免同一 origin 并存两份 WebSocket；切换主机时才销毁旧窗口。
+ * 避免同一 origin 并存两份 WebSocket。
  *
  * @param host - 目标主机。**必须是当前配置里的那份**（调用方从 `hostsData` 取），
  *   因为这里会把它交给窗口作为最新配置。
  */
 function openHost(host: HostEntry): void {
-  if (currentWindow !== undefined && currentHostId === host.id && !currentWindow.win.isDestroyed()) {
+  // 该 host 已开 → 只更新配置并唤起，**绝不再建第二个窗口**。
+  //
+  // 这条不变量（同一 host 至多一个窗口）是必须的：同一个 origin 并存两个窗口
+  // 会有两份 WebSocket 连到同一台 dsh，既浪费又会让页面状态互相打架——这正是
+  // 原实现「切换主机时销毁旧窗口」想避免的事，多窗口化之后由它来保证。
+  const existing = hostWindows.get(host.id)
+  if (existing !== undefined && !existing.win.isDestroyed()) {
     // 窗口已存在时也要把最新配置交进去：它可能停在旧 token / 旧显示名上
     // （窗口持有的是创建时那份快照，见 windows.ts 的 updateHost 说明）。
-    currentWindow.updateHost(host)
-    currentWindow.show()
+    existing.updateHost(host)
+    lastFocusedHostId = host.id
+    existing.show()
+    refreshChrome()
     return
   }
-  // destroy() 不触发 close 事件，因此这里的销毁不会被隐藏拦截挡住。
-  currentWindow?.win.destroy()
-  currentHostId = host.id
-  currentWindow = createHostWindow(
+
+  lastFocusedHostId = host.id
+  const handle = createHostWindow(
     host,
     // 链接分流用的已知主机列表**从这里注入**：`hostsData` 属于主进程，
     // `windows.ts` 不该反向依赖 index.ts（见 createHostWindow 的说明）。
@@ -338,11 +453,15 @@ function openHost(host: HostEntry): void {
     () => hostsData.hosts.map(entry => entry.origin),
     title => {
       // 离线期间标题由重试倒计时接管，不让页面标题覆盖掉状态提示。
-      if (title !== '' && currentWindow?.isOffline() === false) {
+      //
+      // 读的是**这个窗口自己**的句柄（而不是「当前窗口」）：多窗口下拿当前窗口
+      // 会让 B 窗口的标题被 A 的离线状态决定——张冠李戴。
+      const self = hostWindows.get(host.id)
+      if (title !== '' && self?.isOffline() === false) {
         // 读**当前**配置而不是闭包里的快照：主机被重命名后，页面标题一变
         // 就应该带上新名字（否则窗口标题会一直停在旧显示名）。
-        const label = hostsData.hosts.find(h => h.id === currentHostId)?.label ?? host.label
-        currentWindow?.win.setTitle(`${label} — ${title}`)
+        const label = hostsData.hosts.find(h => h.id === host.id)?.label ?? host.label
+        self?.win.setTitle(`${label} — ${title}`)
       }
     },
     () => { refreshChrome() },
@@ -351,8 +470,63 @@ function openHost(host: HostEntry): void {
     () => settingsData.hideOnClose,
     // 窗口内的 Ctrl+, 入口（Windows 上菜单栏不显示，只靠 application menu 会没反应）。
     () => { openSettingsWindow() },
+    // 跨主机跳转是否开新窗口——同样是现取的用户设置。
+    () => settingsData.openInNewWindow,
+    // 跨主机跳转的目标 URL → 开/唤起那台主机的窗口。
+    url => { openHostByUrl(url) },
   )
-  currentWindow.win.on('closed', () => { currentWindow = undefined })
+
+  hostWindows.set(host.id, handle)
+
+  // 聚焦时把它记为「当前主机」：菜单的 ● 标记、托盘的「重新加载/立即重试」
+  // 都以它为目标。这是多窗口下「当前主机」这个概念的**唯一定义处**。
+  handle.win.on('focus', () => {
+    lastFocusedHostId = host.id
+    refreshChrome()
+  })
+
+  handle.win.on('closed', () => {
+    // 用 `host.id` 而不是遍历查找：注册时就知道是哪个 id，没有理由事后再猜。
+    // 只在 Map 里仍是自己时才删——极端情况下（改地址重建）可能已被新窗口顶替。
+    if (hostWindows.get(host.id) === handle) hostWindows.delete(host.id)
+    // `lastFocusedHostId` **刻意不清**：见它的说明（容忍一个失效 id 的成本很低，
+    // 而清空会让「关掉 B 但 A 还开着」时丢掉用户上次的落点）。
+    refreshChrome()
+  })
+}
+
+/**
+ * 按 URL 打开它对应的那台已配置主机（task-19：「跨主机跳转开新窗口」的落点）。
+ *
+ * 由 `windows.ts` 的 `openNewWindow` 回调传入，触发时机是「页面 `window.open` 了
+ * 一个指向**另一台已配置主机**的地址，且用户开了新窗口选项」。
+ *
+ * **只认已配置主机的 origin**：URL 的路径与查询被丢弃（窗口总是从 `host.origin`
+ * 干净加载）。这是刻意的——token 之类的凭据不该经 URL 传递（见 `hosts.ts` 关于
+ * origin 必须纯净的说明），而 dsh 是 SPA，具体到哪个会话由它自己恢复。
+ *
+ * 找不到对应主机时**什么都不做**：判定层（`windowOpenDecision`）已经保证只有
+ * 「∈ 已知主机」的地址才会走到这里；真找不到说明配置在两次判定之间被改了，
+ * 此时静默忽略比硬开一个未配置的窗口安全。
+ *
+ * @param url - 页面请求打开的地址。
+ */
+function openHostByUrl(url: string): void {
+  let origin: string
+  try {
+    origin = normalizeOrigin(url)
+  } catch {
+    // 非法地址：判定层不会放它过来，这里只是不让异常冒到 Electron 的事件回调里。
+    return
+  }
+
+  const host = hostsData.hosts.find(h => h.origin === origin)
+  if (host === undefined) return
+
+  // 复用 `openHost` 而不是自己建窗口：这样自动命中「同一 host 至多一个窗口」
+  // 这条不变量——那台主机若已经开着，这里只会把它唤到前台，而不是并存两个窗口
+  // （两份 WebSocket 连同一台 dsh）。这也正是本路径不用 Electron `allow` 的原因。
+  openHost(host)
 }
 
 /**
@@ -417,12 +591,13 @@ async function requestRemoveHost(host: HostEntry): Promise<void> {
   const removedId = host.id
   await persist(removeHost(hostsData, removedId))
 
-  // 删掉的正是当前打开的那台 → 关闭其窗口：配置里已无此主机，继续留着
+  // 被删的那台**自己**有窗口 → 关闭它：配置里已无此主机，继续留着
   // 会让主机列表与实际窗口不一致（用户会以为没删掉）。
-  if (shouldCloseWindowAfterRemove(removedId, currentHostId)) {
-    currentWindow?.win.destroy()
-    currentWindow = undefined
-    currentHostId = undefined
+  //
+  // 判据是「它自己有没有窗口」而不是「它是不是当前那台」：多窗口下用户可能删掉
+  // 一台没开着的主机，按「当前」判会误关他正在看的那台。
+  if (shouldCloseWindowAfterRemove(removedId, [...hostWindows.keys()])) {
+    hostWindows.get(removedId)?.win.destroy()
   }
   refreshChrome()
 }
@@ -516,16 +691,16 @@ function installTray(): void {
   if (tray !== undefined) return
   try {
     const deps: TrayDeps = {
-      isOffline: () => currentWindow?.isOffline() ?? false,
+      isOffline: () => currentHostWindow()?.isOffline() ?? false,
       onOpen: () => { openClient() },
       onQuit: () => { app.quit() },
       getData: () => hostsData,
-      getCurrentId: () => currentHostId,
+      getCurrentId: () => getCurrentHostId(),
       openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
       onAddHost: () => { openWelcomeWindow() },
       onEditCurrentHost: () => { openEditCurrentHost() },
-      onReload: () => { currentWindow?.reload() },
-      onRetryNow: () => { currentWindow?.retryNow() },
+      onReload: () => { currentHostWindow()?.reload() },
+      onRetryNow: () => { currentHostWindow()?.retryNow() },
       onResetLogin: host => { resetHostLoginState(host) },
       onRemoveHost: host => { void requestRemoveHost(host) },
       onOpenSettings: () => { openSettingsWindow() },
@@ -545,12 +720,12 @@ function installAppMenuBar(): void {
   try {
     appMenu = installAppMenu({
       getData: () => hostsData,
-      getCurrentId: () => currentHostId,
+      getCurrentId: () => getCurrentHostId(),
       openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
       onAddHost: () => { openWelcomeWindow() },
-      onReload: () => { currentWindow?.reload() },
-      isOffline: () => currentWindow?.isOffline() ?? false,
-      onRetryNow: () => { currentWindow?.retryNow() },
+      onReload: () => { currentHostWindow()?.reload() },
+      isOffline: () => currentHostWindow()?.isOffline() ?? false,
+      onRetryNow: () => { currentHostWindow()?.retryNow() },
       onResetLogin: host => { resetHostLoginState(host) },
       onRemoveHost: host => { void requestRemoveHost(host) },
       onEditCurrentHost: () => { openEditCurrentHost() },
@@ -615,7 +790,7 @@ async function boot(): Promise<void> {
     // 主机数据与「上次使用的主机」记好——他从欢迎页添加/打开主机时用得到。
     if (settingsData.startupBehavior === 'welcome') {
       hostsData = data
-      currentHostId = host.id
+      lastFocusedHostId = host.id
       await saveHosts(dataDir, touchHost(data, host.id))
       refreshChrome()
       openWelcomeWindow()
@@ -623,7 +798,7 @@ async function boot(): Promise<void> {
     }
 
     hostsData = data
-    currentHostId = host.id
+    lastFocusedHostId = host.id
     await saveHosts(dataDir, touchHost(data, host.id))
     openHost(host)
     refreshChrome()
@@ -674,9 +849,14 @@ ipcMain.on('shell:network', (event, online: unknown) => {
   // 只接受**主机窗口**的上报：自 task-15 起，页面自己打开的窗口也带同一个
   // preload（为了让它们共享登录态与离线检测），不校验 sender 的话，子窗口的
   // 网络事件会去驱动主机窗口重载——张冠李戴。
-  if (event.sender.id !== hostWebContentsId()) return
+  //
+  // task-19 起放宽成「属于**任一**已登记主机窗口」：多窗口下只认单个 id 会让
+  // 第二台主机的网络上报被静默丢弃。但**重试必须作用在发送方那一台**——
+  // 用「当前窗口」会让 B 窗口的网络恢复去重载 A 的页面。
+  const handle = hostWindowOf(event.sender.id)
+  if (handle === undefined) return
   // 网络恢复时立刻重试一次，不必等退避耗尽；离线事件交给 did-fail-load 处理。
-  if (online === true) currentWindow?.retryNow()
+  if (online === true) handle.retryNow()
 })
 
 /**
@@ -697,9 +877,18 @@ ipcMain.on('shell:network', (event, online: unknown) => {
  * 中途复位会让窗口装饰闪一下系统配色，而新窗口挂载后马上又会上报真实来源。
  */
 ipcMain.on('shell:theme', (event, raw: unknown) => {
-  if (event.sender.id !== hostWebContentsId()) return
+  // task-19 起放宽成「属于任一已登记主机窗口」：多窗口下只认单个 id 会让第二台
+  // 主机的主题上报被静默丢弃，顶部那条就跟不上皮肤的切换。
+  if (!isHostSender(event.sender.id)) return
   const source = parseThemeSource(raw)
   if (source === undefined) return
+  // ⚠️ **多窗口下的已知取舍**：`nativeTheme` 是**进程级单例**，因此谁后上报谁赢。
+  // 两个窗口若用了不同皮肤，会互相覆盖（表现为顶部那条在两者间来回跳）。
+  //
+  // 按「可接受」处理而非加仲裁：宿主壳与 dsh 前端之间只有「当前主题来源」这一个
+  // 契约（见 desktop-shell.ts），没有「哪个窗口的主题优先」的概念；而两个窗口
+  // 同属一个用户、一套 dsh 部署，皮肤本就应当一致——不一致是用户的刻意选择，
+  // 此时「最后操作的那个说了算」也是最不意外的行为。
   nativeTheme.themeSource = source
 })
 
@@ -735,7 +924,16 @@ const quietGate = createQuietGate({
 })
 
 ipcMain.on('shell:notify', (event, raw: unknown) => {
-  if (event.sender.id !== hostWebContentsId()) return
+  // **按发送方解析出「是哪一台主机窗口」**，而不是取「当前主机」。
+  //
+  // 这是多窗口下最要紧的一处：若用 `currentHostWindow()`，B 窗口的审批通知会
+  // 显示 A 的主机名、点击后唤起 A 的窗口——用户被引到完全无关的会话上，而真正
+  // 卡住等他回应的那个 agent 仍被晾着。
+  const source = findHostWindowByWebContents(liveHostWindowRefs(), event.sender.id)
+  if (source === undefined) return
+  const senderHandle = hostWindows.get(source.hostId)
+  if (senderHandle === undefined) return
+
   // 用户在设置里关掉了通知 → 直接丢弃上报。
   //
   // 刻意在**最前面**判掉（而不是在 notifier 内部抑制）：关掉通知意味着这个功能
@@ -750,17 +948,21 @@ ipcMain.on('shell:notify', (event, raw: unknown) => {
    *
    * **焦点现取**，不是上报时取一次存着：静默期到期时用户可能已经切回窗口看
    * 结果了，那样就不该再弹——判据必须是「我准备弹的这一刻他到底在不在看」。
+   *
+   * 两处都读**发送方那一台**（`senderHandle`）而非当前窗口：焦点判定若看的是
+   * 当前窗口，用户正盯着 B 看时，A 的审批通知会被误判成「他正在看」而不弹——
+   * 而那恰恰是最需要弹的一条。
    */
   const buildContext = (): NotifyContext => ({
     urgent: request.urgent,
     // 焦点判定只在主进程做（preload 不重复实现）——它才是那个知道窗口
     // 是否被隐藏/最小化/被别的应用盖住的地方。
-    windowFocused: currentWindow?.win.isFocused() ?? false,
-    hostLabel: hostsData.hosts.find(h => h.id === currentHostId)?.label ?? 'dsh',
+    windowFocused: senderHandle.win.isDestroyed() ? false : senderHandle.win.isFocused(),
+    hostLabel: hostsData.hosts.find(h => h.id === source.hostId)?.label ?? 'dsh',
     titleHint: request.title,
-    // 点击通知 → 唤起并聚焦窗口。窗口可能是被收进托盘的隐藏态（隐藏 ≠ 关闭），
-    // `show()` 内部已处理 show + focus。
-    onActivate: () => { currentWindow?.show() },
+    // 点击通知 → 唤起并聚焦**那一台**窗口。窗口可能是被收进托盘的隐藏态
+    // （隐藏 ≠ 关闭），`show()` 内部已处理 show + focus。
+    onActivate: () => { senderHandle.show() },
   })
 
   const fire = (context: NotifyContext): void => {
@@ -882,13 +1084,19 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
       return { ok: false as const, message: `该地址已被「${clash.label}」使用，请先删除或改用其他地址。` }
     }
 
-    const editedIsOpenHost = hasHostWindow() && currentHostId === current.id
+    // 「被编辑的那台是否开着窗口」——多窗口下的判据是**它自己**在不在注册表里，
+    // 而不是「它是不是当前那台」。用户完全可能编辑一台没开着的主机。
+    const editedIsOpenHost = hostWindows.has(current.id)
     await persist(replaceHost(hostsData, current.id, edited))
     // 改地址会重算 id（id 与 partition 名都由 origin 派生），编辑目标必须跟着换，
     // 否则下一次保存会指向一条已经不存在的记录。
     editingHostId = edited.id
 
     // 「保存后该怎么处理主机窗口」由纯函数判定（有单测）。
+    //
+    // `hostAfterEditEffect` 的三个输入的**语义不变**，只是 `editedIsOpenHost` 的
+    // 算法从「等于 currentHostId」换成了「在注册表里」——判定本身没有被削弱：
+    // 它要回答的仍然是「这台主机此刻有没有窗口」，与哪台是「当前」无关。
     const effect = hostAfterEditEffect({
       originChanged,
       editedIsOpenHost,
@@ -900,11 +1108,11 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
       // 但**紧接着就要打开新地址的窗口**——否则此刻只剩编辑窗口，用户一关它
       // 就一个窗口都不剩，`window-all-closed` 会把客户端退掉（用户报的
       // 「改地址保存后客户端退出」正是这条路径）。
-      if (editedIsOpenHost) {
-        currentWindow?.win.destroy()
-        currentWindow = undefined
-        currentHostId = undefined
-      }
+      //
+      // 只销毁**被编辑的那台**的窗口（多窗口下其它主机的窗口不该受影响）。
+      if (editedIsOpenHost) hostWindows.get(current.id)?.win.destroy()
+      // 若被编辑的正是「当前主机」，它的 id 已经变了，焦点落点要跟着换。
+      if (lastFocusedHostId === current.id) lastFocusedHostId = edited.id
       openHost(edited)
     } else if (effect === 'reload') {
       // 地址没变 → 让窗口生效。**必须先把最新配置交给窗口**，再重放 token 握手：
@@ -912,8 +1120,11 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
       // 随后被 401 处理器丢到离线页）——这正是真机上「更新 token 后点『重新加载』
       // 进不去、而『打开』（新建窗口、从配置读）能进」的原因。
       // updateHost 同时会重新武装 token 回放，见 windows.ts。
-      currentWindow?.updateHost(edited)
-      currentWindow?.reloadWithToken()
+      //
+      // 作用在**被编辑的那台**窗口上（若它开着），而不是「当前窗口」。
+      const editedWindow = hostWindows.get(current.id)
+      editedWindow?.updateHost(edited)
+      editedWindow?.reloadWithToken()
     }
 
     refreshChrome()
@@ -1001,8 +1212,20 @@ void app.whenReady().then(boot).catch(error => {
 
 app.on('activate', () => {
   // macOS 语义：点 Dock 图标时，若窗口被隐藏则唤起，若都关掉了则重开。
-  if (currentWindow !== undefined && !currentWindow.win.isDestroyed()) {
-    currentWindow.show()
+  //
+  // 多窗口下优先唤起**最后聚焦的那一台**（用户离开时正在看的那台）；它若已被
+  // 关掉或从未打开，就退到任意一个主机窗口。判定复用 `openClient` 的
+  // `focusTargetFor` 会太重（那个会开欢迎页、重开主机），而 `activate` 的语义
+  // 更窄：**只唤醒已经存在的窗口**，不主动新建（`boot()` 那条分支负责新建）。
+  const current = currentHostWindow()
+  if (current !== undefined) {
+    current.show()
+    return
+  }
+  // 没有「当前主机窗口」但还有别的主机窗口开着 → 唤起其中一台。
+  const anyHost = hostWindows.values().next()
+  if (anyHost.done !== true && !anyHost.value.win.isDestroyed()) {
+    showWindow(anyHost.value.win)
     return
   }
   if (BrowserWindow.getAllWindows().length === 0) {

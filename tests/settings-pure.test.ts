@@ -120,8 +120,30 @@ describe('每个设置都必须有真实的消费点（防「存下来了却没�
       'startupBehavior',
       'hideOnClose',
       'updateCheckEnabled',
+      'openInNewWindow',
     ] as const) {
       expect(source, `设置 ${field} 在 index.ts 里没有任何消费点`).toContain(`settingsData.${field}`)
     }
+  })
+})
+
+describe('openInNewWindow（task-19：跨主机跳转开新窗口）', () => {
+  it('默认 false —— 沿用 task-18 的既有行为，升级后用户感觉不到变化', () => {
+    expect(DEFAULT_SETTINGS.openInNewWindow).toBe(false)
+  })
+
+  it('可以设为 true', () => {
+    expect(normalizeSettings({ openInNewWindow: true }).openInNewWindow).toBe(true)
+  })
+
+  it('类型不符 → 回退默认（不是「非 0 即真」那种宽松解析）', () => {
+    expect(normalizeSettings({ openInNewWindow: 'yes' }).openInNewWindow).toBe(false)
+    expect(normalizeSettings({ openInNewWindow: 1 }).openInNewWindow).toBe(false)
+  })
+
+  it('缺字段（旧设置文件）→ 补默认，不影响其它字段', () => {
+    const result = normalizeSettings({ notifyEnabled: false, openInNewWindow: true })
+    expect(result.notifyEnabled).toBe(false)
+    expect(result.openInNewWindow).toBe(true)
   })
 })

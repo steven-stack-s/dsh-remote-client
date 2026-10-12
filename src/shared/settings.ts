@@ -46,6 +46,16 @@ export interface ClientSettings {
   hideOnClose: boolean
   /** 是否在启动后后台检查更新（关掉则整个更新器都不装配）。 */
   updateCheckEnabled: boolean
+  /**
+   * 页面里指向**另一台已配置主机**的链接是否开成新窗口（多主机并行）。
+   *
+   * 站内链接（同一 origin 内部的跳转，例如切换会话）**不受它影响**，永远留在
+   * 原窗口——否则在 dsh 里点任何一个会话都会弹出一个新窗口，那是用户明确不要的。
+   *
+   * 默认 `false`：沿用 task-18 起的既有行为（跨主机也替换当前窗口），升级后用户
+   * 感觉不到变化；想要多窗口的人自己去打开。
+   */
+  openInNewWindow: boolean
 }
 
 /**
@@ -77,6 +87,7 @@ export const DEFAULT_SETTINGS: ClientSettings = {
   startupBehavior: 'lastHost',
   hideOnClose: true,
   updateCheckEnabled: true,
+  openInNewWindow: false,
 }
 
 /**
@@ -131,6 +142,9 @@ export function normalizeSettings(raw: unknown): ClientSettings {
     updateCheckEnabled: typeof source.updateCheckEnabled === 'boolean'
       ? source.updateCheckEnabled
       : DEFAULT_SETTINGS.updateCheckEnabled,
+    openInNewWindow: typeof source.openInNewWindow === 'boolean'
+      ? source.openInNewWindow
+      : DEFAULT_SETTINGS.openInNewWindow,
   }
 }
 
@@ -156,4 +170,5 @@ export function isClientSettings(value: unknown): value is ClientSettings {
     && (candidate.startupBehavior === 'lastHost' || candidate.startupBehavior === 'welcome')
     && typeof candidate.hideOnClose === 'boolean'
     && typeof candidate.updateCheckEnabled === 'boolean'
+    && typeof candidate.openInNewWindow === 'boolean'
 }

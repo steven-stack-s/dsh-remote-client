@@ -20,7 +20,6 @@ import {
   shouldRemoveWindowMenuBar,
   trayIconVariant,
   trayMenuLayout,
-  trayOpenAction,
   windowOpenDecision,
   windowTitleFor,
   type KeyChord,
@@ -241,20 +240,10 @@ describe('trayMenuLayout（主机管理回到托盘）', () => {
   })
 })
 
-describe('trayOpenAction（#4：打开客户端）', () => {
-  it('有任何窗口 → show（即使没有当前主机，例如只剩欢迎页）', () => {
-    expect(trayOpenAction({ hasWindow: true, hasCurrentHost: true })).toBe('show')
-    expect(trayOpenAction({ hasWindow: true, hasCurrentHost: false })).toBe('show')
-  })
-
-  it('没有窗口但有当前主机 → reopen', () => {
-    expect(trayOpenAction({ hasWindow: false, hasCurrentHost: true })).toBe('reopen')
-  })
-
-  it('没有窗口也没有当前主机 → welcome（不能点了没反应）', () => {
-    expect(trayOpenAction({ hasWindow: false, hasCurrentHost: false })).toBe('welcome')
-  })
-})
+// `trayOpenAction` 的测试于 task-19 移除：该函数被
+// `window-registry.ts` 的 `focusTargetFor` 取代——多窗口下多出「记得的那台可能
+// 已经关了」这个情况，旧的二值判定无法表达。新判定的测试在
+// `tests/window-registry.test.ts`，覆盖比这里更全（含「记得的已关 → 退到任意一台」）。
 
 describe('trayIconVariant（#5：托盘图标随主题与离线状态选色）', () => {
   it('离线时一律用灰图标（**离线优先于主题**）', () => {
@@ -774,5 +763,57 @@ describe('matchesSettingsChord（task-19：Ctrl+, 的窗口内注册）', () => 
     expect(matchesDevToolsChord(ctrlComma)).toBe(false)
     expect(matchesReloadChord(ctrlComma)).toBe(false)
     expect(matchesCloseChord(ctrlComma)).toBe(false)
+  })
+})
+
+describe('windowOpenDecision 的跨主机分流（task-19：仅跨主机跳转开新窗口）', () => {
+  const portal = 'https://nas.oray.com'
+  const dshA = 'https://dsh-a.example.com'
+  const dshB = 'https://dsh-b.example.com'
+  const known = [dshA, dshB]
+
+  const decide = (url: string, currentOrigin: string, openInNewWindow: boolean) =>
+    windowOpenDecision({ url, currentOrigin, knownHostOrigins: known, openInNewWindow })
+
+  it('缺省（不传该字段）→ 与显式 false 完全一致，即 task-18 的旧行为', () => {
+    const implicit = windowOpenDecision({ url: `${dshA}/`, currentOrigin: portal, knownHostOrigins: known })
+    expect(implicit).toBe('navigate-self')
+    expect(implicit).toBe(decide(`${dshA}/`, portal, false))
+  })
+
+  it('开关关 → 跨主机跳转仍是替换当前窗口', () => {
+    expect(decide(`${dshA}/`, portal, false)).toBe('navigate-self')
+    expect(decide(`${dshB}/session/1`, dshA, false)).toBe('navigate-self')
+  })
+
+  it('开关开 → 跨主机跳转开新窗口', () => {
+    expect(decide(`${dshA}/`, portal, true)).toBe('open-new-window')
+    expect(decide(`${dshB}/session/1`, dshA, true)).toBe('open-new-window')
+  })
+
+  it('开关开 → **站内链接仍留在原窗口**（否则每个会话都弹一个新窗口）', () => {
+    expect(decide(`${dshA}/session/1`, dshA, true)).toBe('navigate-self')
+    expect(decide(`${portal}/desktop`, portal, true)).toBe('navigate-self')
+  })
+
+  it('开关开 → 真外链仍交给系统浏览器', () => {
+    expect(decide('https://github.com/x/y', dshA, true)).toBe('external')
+  })
+
+  it('开关开 → 非 http(s) 仍被安全边界挡住（不受开关影响）', () => {
+    expect(decide('file:///etc/passwd', dshA, true)).toBe('external')
+    expect(decide('javascript:alert(1)', dshA, true)).toBe('external')
+  })
+
+  it('开关开 → 非法 URL 仍 external', () => {
+    for (const url of ['', '   ', 'not a url']) {
+      expect(decide(url, dshA, true)).toBe('external')
+    }
+  })
+
+  it('origin 规范化在跨主机判定里同样生效（大小写/默认端口不算不同主机）', () => {
+    // 不规范化会把同一个站点判成「另一台主机」→ 平白多开一个窗口。
+    expect(decide('https://DSH-A.example.com/x', dshA, true)).toBe('navigate-self')
+    expect(decide('https://dsh-a.example.com:443/x', dshA, true)).toBe('navigate-self')
   })
 })
