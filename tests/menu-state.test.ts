@@ -817,3 +817,71 @@ describe('windowOpenDecision 的跨主机分流（task-19：仅跨主机跳转�
     expect(decide('https://dsh-a.example.com:443/x', dshA, true)).toBe('navigate-self')
   })
 })
+
+/**
+ * 「指向**本窗口所属主机**」必须替换当前窗口，哪怕它看起来像跨主机跳转。
+ *
+ * ## 这条来自一个真机缺陷（门户场景）
+ *
+ * 实况：窗口承载的主机是 `A`，但页面一进去就被门户 **302 到门户自己的域**并停在那里
+ * （绿联 UGOS 就是这样：登录后停在桌面，不回跳）。此时用户点门户里的 **A 图标**：
+ *
+ * - `currentOrigin`（页面当前 URL）是**门户域**，不等于 `A` → 第 3 条「站内」不命中；
+ * - 于是落到第 4 条「∈ 已知主机」→ 被当成**跨主机跳转**；
+ * - 开关**开** → `open-new-window` → 主进程 `openHostByUrl()` → `openHost()` 发现
+ *   **A 已经有窗口了（就是这个窗口）** → 只 `show()` 唤起、**不导航**；
+ * - 结果：窗口停在门户不动，用户点了个寂寞。同时我们 `deny` 了 `window.open`，
+ *   门户那边（UGOS 的 CloudWindow 桥）拿不到窗口 → 报 `link type not supported`。
+ *
+ * 开关**关**时反而正常，因为 `navigate-self` 会真的 `loadURL()` 把当前窗口导航走
+ * —— 这也正是旧版（还没有这个开关时恒定走 `navigate-self`）一直好用的原因。
+ *
+ * 判据因此必须是「目标是不是**本窗口所属的主机**」，而不只是「页面当前是不是停在
+ * 那个 origin 上」。窗口承载哪台主机是**稳定**的，页面停在哪是**会被门户改掉**的。
+ */
+describe('windowOpenDecision：指向本窗口所属主机 → 替换当前窗口（门户不回跳场景）', () => {
+  const portal = 'https://nas.oray.com'
+  const dshA = 'https://dsh-a.example.com'
+  const dshB = 'https://dsh-b.example.com'
+  const known = [dshA, dshB]
+
+  const decide = (
+    url: string,
+    currentOrigin: string,
+    openInNewWindow: boolean,
+    windowHostOrigin: string | undefined,
+  ) =>
+    windowOpenDecision({
+      url,
+      currentOrigin,
+      knownHostOrigins: known,
+      openInNewWindow,
+      windowHostOrigin,
+    })
+
+  it('门户里点「本窗口所属主机」的图标 → 在当前窗口打开，而不是开新窗口', () => {
+    expect(decide(`${dshA}/`, portal, true, dshA)).toBe('navigate-self')
+    expect(decide(`${dshA}/session/1`, portal, true, dshA)).toBe('navigate-self')
+  })
+
+  it('指向**另一台**主机时仍按设置开新窗口（多窗口能力不能被这条吃掉）', () => {
+    expect(decide(`${dshB}/`, portal, true, dshA)).toBe('open-new-window')
+  })
+
+  it('不传 windowHostOrigin（缺省）→ 维持旧行为，证明这是纯增量条件', () => {
+    expect(decide(`${dshA}/`, portal, true, undefined)).toBe('open-new-window')
+  })
+
+  it('开关关时本窗口所属主机当然也是替换当前窗口（与开关无关）', () => {
+    expect(decide(`${dshA}/`, portal, false, dshA)).toBe('navigate-self')
+  })
+
+  it('本窗口所属主机同样按 origin 规范化比较（大小写/默认端口）', () => {
+    expect(decide('https://DSH-A.example.com/x', portal, true, dshA)).toBe('navigate-self')
+    expect(decide('https://dsh-a.example.com:443/x', portal, true, dshA)).toBe('navigate-self')
+  })
+
+  it('真外链不受影响：仍交给系统浏览器', () => {
+    expect(decide('https://github.com/x/y', portal, true, dshA)).toBe('external')
+  })
+})

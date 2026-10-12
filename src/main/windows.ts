@@ -206,7 +206,16 @@ function installContentWindowBehavior(
   )
 
   // 递归接管：孙窗口同样共享 partition 与 preload、同样不接管菜单栏。
-  installWindowOpenPolicy(child.webContents, getKnownHostOrigins)
+  installWindowOpenPolicy(
+    child.webContents,
+    getKnownHostOrigins,
+    // 子窗口不读「跨主机开新窗口」设置（它判断不了用户此刻的意图），沿用默认值。
+    undefined,
+    undefined,
+    // 但它承载的仍是**同一台主机**——门户登录后不回跳在这类弹窗里同样会发生，
+    // 因此「窗口所属主机」必须照样交下去。
+    () => getHost().origin,
+  )
   child.webContents.on('did-create-window', grandchild => {
     installContentWindowBehavior(grandchild, getHost, getKnownHostOrigins)
   })
@@ -263,6 +272,7 @@ function installWindowOpenPolicy(
   getKnownHostOrigins: () => readonly string[],
   getOpenInNewWindow: () => boolean = () => false,
   onOpenNewWindow: ((url: string) => void) | undefined = undefined,
+  getWindowHostOrigin: (() => string) | undefined = undefined,
 ): void {
   contents.setWindowOpenHandler(({ url }) => {
     const decision = windowOpenDecision({
@@ -272,6 +282,12 @@ function installWindowOpenPolicy(
       currentOrigin: currentOriginOf(contents),
       knownHostOrigins: getKnownHostOrigins(),
       openInNewWindow: getOpenInNewWindow(),
+      // 但「页面现在停在哪」不能单独当判据：门户登录后不回跳时，窗口名义上仍是
+      // 主机 A 的、页面却停在门户域——此时点门户里的 A 图标会被误判成「跨主机」。
+      // 所以再把**窗口所属主机**一并交进去（两条判据互补，缺一不可）。
+      ...(getWindowHostOrigin === undefined
+        ? {}
+        : { windowHostOrigin: getWindowHostOrigin() }),
     })
 
     if (decision === 'navigate-self') {
@@ -551,6 +567,9 @@ export function createHostWindow(
     getKnownHostOrigins,
     getOpenInNewWindow,
     onOpenNewWindow,
+    // 「本窗口属于哪台主机」——读**可变**的 `host`（不是初始快照）：改地址后
+    // 窗口会以新 origin 重建，这里必须跟着走，否则判据会停在旧地址上。
+    () => host.origin,
   )
 
   // 仍然不可达（`deny` 从不触发它），但**理由变了**：task-19 的「开新窗口」也走
