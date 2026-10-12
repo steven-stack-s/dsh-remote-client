@@ -30,17 +30,20 @@ This client does the opposite: **the backend always stays remote**. The window l
 
 - **The top strip follows the app theme**: a dsh skin plugin can only restyle the page itself; the window title bar and menu bar are drawn by the operating system and are out of reach of page CSS. Without an extra step, changing the skin leaves you with "the whole page changed, but the top strip did not". The client therefore does two things: it forwards `data-ds-theme-source`, which the dsh frontend publishes, into `nativeTheme.themeSource` (the contract dsh officially reserves for host shells), and on Windows it switches to a **frameless window** so that dsh can draw the top strip itself.
 
-  The cost is that on Windows the **native menu bar is no longer shown** — Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars. Host management has therefore also moved into the tray; the menu bar's accelerators still work (`Ctrl+N` to add a host, `Ctrl+E` to edit one, `Ctrl+Q` to quit), they simply have no surface left to advertise them. macOS / Linux keep their framed windows and their menu bar.
+  The cost is that on Windows the **native menu bar is no longer shown** — Electron defines frameless as *no chrome*, and chrome explicitly includes toolbars. Host management has therefore also moved into the tray; the menu bar's accelerators still work (`Ctrl+N` to add a host, `Ctrl+E` to edit one, `Ctrl+,` for settings, `Ctrl+Q` to quit), they simply have no surface left to advertise them. **For that same reason `Ctrl+,` (settings) is registered a second time as an in-window accelerator** — registered on the menu bar alone, that key would do nothing at all on Windows. macOS / Linux keep their framed windows and their menu bar.
+
+- **At most one window per host, several hosts in parallel**: windows are indexed by host id, so opening the same host again just raises the existing window (otherwise one origin would run two WebSockets against the same dsh). With several windows open, "the current host" means **the last one focused** — the menu's ● marker and the tray's "Reload / Retry now" all target it.
 
 ## Features
 
-- **Multi-host management**: add / switch / rename / delete; each host gets its own isolated login state (per-partition).
+- **Multi-host management**: add / switch / rename / delete; each host gets its own isolated login state (per-partition). Several hosts can be **open at the same time** (one window each).
 - **Access without a plugin**: a dsh without the auth plugin can be reached with the launch token printed by `dsh web`.
 - **Offline self-healing**: when the host is unreachable the client shows an overlay page and retries with exponential backoff (1s→2s→…→30s), retrying immediately once the network recovers.
-- **Link routing**: links to a configured host or the current site navigate inside the client; external links go to the system browser.
-- **Native notifications**: approval requests pop up **unconditionally** (they block your workflow); a message notification fires only once a reply has **genuinely stopped** and the window is unfocused.
+- **Link routing**: links to a configured host open inside the client (optionally in a new window — see Client settings); external links go to the system browser.
+- **Client settings**: tray → "Client settings", or `Ctrl+,`. Covers the notification switch and quiet period, startup behaviour, whether closing hides to the tray, whether cross-host jumps open a new window, and update checks. Changes take effect **immediately**, no restart.
+- **Native notifications**: approval requests pop up **unconditionally** (they block your workflow); a message notification fires only once a reply has **genuinely stopped** and the window is unfocused. With several hosts the notification names **the host it came from**, and clicking it returns to that window.
 - **Tray**: host management and on/off both live here (on Windows the frameless window shows no menu bar — see Design highlights).
-- **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools.
+- **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+,` client settings, `Ctrl+Q` quit, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools (**docked inside the window**, not in a separate one).
 - **Automatic (differential) updates**: about 30 seconds after startup the client checks for a new version **in the background** and downloads only the parts that changed (no more re-downloading 106MB). Once the download finishes it asks exactly once — "Restart now" installs it, "Later" is not nagging and the same version is never asked about twice. All of it is silent: an unreachable network or a broken update source only leaves a log line, **never an error dialog**, and never affects normal use.
   > **Measured**: upgrading 0.1.9 → 0.1.10 pulled **1.26MB** instead of the full 106.3MB package (about 1%).
   > The updater writes a diagnostic log to `%APPDATA%\dsh-remote-client\update.log` (latest
@@ -48,6 +51,21 @@ This client does the opposite: **the backend always stays remote**. The window l
   > ever fell back to the full package.
   > ⚠️ **This requires the installed client to already be 0.1.7 or newer.** Versions 0.1.6 and earlier contain no updater, so they can only be upgraded by downloading the installer by hand — **that is the last time anyone has to install the 106MB package manually.**
 - **Windows installer**: ships its own Electron runtime, double-click to install, built by CI.
+
+## Client settings
+
+Tray → "Client settings", menu bar → "Edit(E) → Settings…", or `Ctrl+,`. All of these are preferences of the **client itself** and do not affect the remote dsh (those live in dsh's own settings panel in the web UI).
+
+| Setting | Default | Notes |
+|---|---|---|
+| Show native notifications | on | When off, neither approvals nor new messages raise a system notification |
+| Quiet period for message notifications | 15s (range 15–300) | After a reply stops streaming, wait this long with no new output before notifying. Too short and "waiting on a slow tool" is mistaken for "finished". **Approval notifications ignore it** and always fire immediately |
+| On startup | Open the last host | Can be changed to always show the "Add host" page |
+| Hide to tray instead of quitting | on | When off, closing the window quits (on macOS this has no effect — that platform already keeps running when the last window closes) |
+| Open cross-host jumps in a new window | off | Clicking another dsh host on a portal opens a new window instead of replacing the current one. **In-site navigation is unaffected** — opening a session stays in the current window |
+| Check for updates after startup | on | When off, the updater is not wired up at all |
+
+Changes take effect **immediately** (host behaviour reads the current value rather than a startup snapshot), with no restart. Settings live in `%APPDATA%\dsh-remote-client\settings.json`; a corrupt file is first backed up as `settings.json.corrupt-<timestamp>` before falling back to defaults — it is never silently discarded.
 
 ## Remote prerequisites (choose one)
 
