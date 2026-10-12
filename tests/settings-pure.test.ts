@@ -98,3 +98,30 @@ describe('isClientSettings', () => {
     expect(isClientSettings({ ...DEFAULT_SETTINGS, notifyEnabled: 'yes' })).toBe(false)
   })
 })
+
+describe('每个设置都必须有真实的消费点（防「存下来了却没人读」）', () => {
+  it('主进程源码里逐个出现了读取该设置的表达式', async () => {
+    // 这组断言守的是 task-19 里最容易假完成的一环：设置界面、读写、单测全绿，
+    // 但主进程根本没读过那个字段——用户改完毫无变化，而所有测试都通过。
+    //
+    // 判据是「字段名出现在 index.ts 的读取表达式里」，而不是精确的调用图：
+    // 后者需要引入 AST 工具，代价远超收益。字段名足够独特（没有同名变量），
+    // 因此这条粗糙的断言已经能挡住「忘了接」这个真实风险。
+    const { readFile } = await import('node:fs/promises')
+    const { join } = await import('node:path')
+    const source = await readFile(
+      join(import.meta.dirname, '..', 'src', 'main', 'index.ts'),
+      'utf8',
+    )
+
+    for (const field of [
+      'notifyEnabled',
+      'notifyQuietMs',
+      'startupBehavior',
+      'hideOnClose',
+      'updateCheckEnabled',
+    ] as const) {
+      expect(source, `设置 ${field} 在 index.ts 里没有任何消费点`).toContain(`settingsData.${field}`)
+    }
+  })
+})
