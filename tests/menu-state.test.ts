@@ -79,7 +79,17 @@ describe('canEditHost', () => {
 
 describe('editMenuLayout（#1：编辑菜单的分隔线）', () => {
   it('项集合与顺序固定', () => {
-    expect(editMenuLayout()).toEqual(['addHost', 'editHost', 'removeHost', 'separator', 'quit'])
+    // task-19 起「设置…」进入本菜单，两侧各有一条分隔线（它作用于整个客户端，
+    // 与前面三项的「主机管理」不是一类）——见下方专门的断言。
+    expect(editMenuLayout()).toEqual([
+      'addHost',
+      'editHost',
+      'removeHost',
+      'separator',
+      'settings',
+      'separator',
+      'quit',
+    ])
   })
 
   it('「添加主机…」与「编辑主机…」之间没有分隔线（用户明确要求）', () => {
@@ -95,8 +105,11 @@ describe('editMenuLayout（#1：编辑菜单的分隔线）', () => {
     expect(layout[layout.length - 1]).toBe('quit')
   })
 
-  it('整条菜单里恰好只有一条分隔线', () => {
-    expect(editMenuLayout().filter(kind => kind === 'separator')).toHaveLength(1)
+  it('整条菜单里有两条分隔线：设置两侧各一条', () => {
+    // task-19 前这里断言「恰好一条」（退出前那条）。加入「设置…」后变成两条——
+    // 这是**契约的有意变更**，不是测试被放宽：新契约同样是精确的（恰好 2 条，
+    // 且位置固定在设置两侧），并已由上面的顺序断言与「设置入口」那组共同钉住。
+    expect(editMenuLayout().filter(kind => kind === 'separator')).toHaveLength(2)
   })
 })
 
@@ -162,13 +175,15 @@ describe('hostAfterEditEffect（#3：改地址保存后的窗口处理）', () =
 })
 
 describe('trayMenuLayout（主机管理回到托盘）', () => {
-  it('布局固定：打开客户端 / 主机管理段 / 关闭客户端', () => {
+  it('布局固定：打开客户端 / 主机管理段 / 客户端设置 / 关闭客户端', () => {
     expect(trayMenuLayout()).toEqual([
       'open',
       'separator',
       'hosts',
       'addHost',
       'editHost',
+      'separator',
+      'settings',
       'separator',
       'quit',
     ])
@@ -180,6 +195,7 @@ describe('trayMenuLayout（主机管理回到托盘）', () => {
     expect(TRAY_MENU_LABELS.hosts).toBe('主机列表')
     expect(TRAY_MENU_LABELS.addHost).toBe('添加主机…')
     expect(TRAY_MENU_LABELS.editHost).toBe('编辑主机…')
+    expect(TRAY_MENU_LABELS.settings).toBe('客户端设置')
   })
 
   it('每个可点击项都有非空文案（漏一个会渲染成一条空白项）', () => {
@@ -687,5 +703,38 @@ describe('shouldRemoveWindowMenuBar（task-17：非主机窗口不要菜单栏�
     // 强行去动应用级菜单会连带弄掉主机窗口的菜单，所以这里保持现状——
     // macOS 上「窗口在看着 A、菜单在操作主机窗口」这个差异是平台限制。
     expect(shouldRemoveWindowMenuBar('darwin')).toBe(false)
+  })
+})
+
+describe('设置入口（task-19）', () => {
+  it('Ctrl+, 被登记为设置快捷键', () => {
+    expect(MENU_ACCELERATORS.settings).toBe('CmdOrCtrl+,')
+  })
+
+  it('「编辑(E)」菜单里有「设置…」，且与退出之间保留分隔线', () => {
+    const layout = editMenuLayout()
+    expect(layout).toContain('settings')
+    // 设置属于应用级操作，与主机管理三项之间要有分隔线：
+    // 后者作用于主机，前者作用于整个客户端。
+    const settingsIndex = layout.indexOf('settings')
+    expect(layout[settingsIndex - 1]).toBe('separator')
+    expect(layout[settingsIndex + 1]).toBe('separator')
+    expect(layout[layout.length - 1]).toBe('quit')
+  })
+
+  it('托盘菜单里有「客户端设置」，文案不得为空', () => {
+    expect(trayMenuLayout()).toContain('settings')
+    expect(TRAY_MENU_LABELS.settings).toBe('客户端设置')
+  })
+
+  it('设置项在托盘里位于主机管理之后、退出之前', () => {
+    const layout = trayMenuLayout()
+    expect(layout.indexOf('settings')).toBeGreaterThan(layout.indexOf('editHost'))
+    expect(layout.indexOf('settings')).toBeLessThan(layout.indexOf('quit'))
+  })
+
+  it('Ctrl+, 与既有快捷键不冲突', () => {
+    const values = Object.values(MENU_ACCELERATORS)
+    expect(new Set(values).size).toBe(values.length)
   })
 })

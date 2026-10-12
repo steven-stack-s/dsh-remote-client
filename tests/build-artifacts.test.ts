@@ -27,19 +27,26 @@ function requireBuilt(): void {
 }
 
 describe('构建产物', () => {
-  it('七个关键产物均存在', async () => {
+  it('九个关键产物均存在', async () => {
     requireBuilt()
     // 断言「恰好」这些，而非「至少包含」：这个测试的价值就是守住产物结构。
     // 新增页面/入口时**必须**同步更新本列表——那正是提醒作者「你在改产物
-    // 布局」的时机。edit.* 于 task-12 加入（编辑主机窗口）。
+    // 布局」的时机。edit.* 于 task-12 加入（编辑主机窗口），
+    // settings.* 于 task-19 加入（客户端设置窗口）。
+    //
+    // 这条断言在 task-19 真的救过一次：settings.html / settings.cjs 没进
+    // electron.vite.config.ts 的入口列表，402 项测试全绿、typecheck 退出码 0，
+    // 而这两个产物**根本没被构建出来**——正是这个文件存在的理由。
     const expected = [
       'main/index.js',
       'preload/host.cjs',
       'preload/welcome.cjs',
       'preload/edit.cjs',
+      'preload/settings.cjs',
       'renderer/offline.html',
       'renderer/welcome.html',
       'renderer/edit.html',
+      'renderer/settings.html',
     ]
     for (const relative of expected) {
       expect(existsSync(join(outDir, relative)), `缺少产物：out/${relative}`).toBe(true)
@@ -53,6 +60,40 @@ describe('构建产物', () => {
       ...(await readdir(join(outDir, 'renderer'))).map(n => `renderer/${n}`),
     ].sort()
     expect(actual).toEqual([...expected].sort())
+  })
+
+  it('每个 renderer 页面与 preload 都登记进了构建入口（否则产物根本不会被生成）', async () => {
+    // 这条守的是**根因**，而上一条守的是症状。task-19 的实际经过：新增了
+    // settings.html 与 preload/settings.ts，但 electron.vite.config.ts 用的是
+    // **显式入口列表**（不是 glob），于是构建安静地跳过它们——402 项测试全绿、
+    // typecheck 退出码 0，只有产物断言能发现。
+    //
+    // 上一条断言能发现，但它报的是「缺少产物：out/renderer/settings.html」，
+    // 读者还得自己反推「为什么没被构建」。这条直接把「源码里存在的页面/预载脚本」
+    // 与「配置里登记的入口」比对，报出的是「某某没登记」——修法一目了然。
+    const config = await readFile(join(root, 'electron.vite.config.ts'), 'utf8')
+
+    const rendererPages = (await readdir(join(root, 'src', 'renderer')))
+      .filter(name => name.endsWith('.html'))
+    const preloadFiles = (await readdir(join(root, 'src', 'preload')))
+      .filter(name => name.endsWith('.ts'))
+
+    for (const page of rendererPages) {
+      expect(config, `src/renderer/${page} 未登记进 electron.vite.config.ts 的 renderer 入口`)
+        .toContain(`src/renderer/${page}`)
+    }
+
+    // preload 目录里的 .ts **不全是入口**：有的只是被入口 import 的共享模块
+    // （`selectors.ts` 被 `host.ts` import，它自己不是页面预载脚本，不该也不可能
+    // 单独登记）。判据不能用「文件名」，得看**有没有页面真的加载它**——
+    // 即 `windows.ts` 是否引用了对应的 `<名字>.cjs`。
+    const windowsSource = await readFile(join(root, 'src', 'main', 'windows.ts'), 'utf8')
+    for (const script of preloadFiles) {
+      const bundleName = script.replace(/\.ts$/u, '.cjs')
+      if (!windowsSource.includes(bundleName)) continue
+      expect(config, `src/preload/${script} 是入口（windows.ts 加载了 ${bundleName}），但未登记进配置`)
+        .toContain(`src/preload/${script}`)
+    }
   })
 
   it('preload 未内联 npm electron 包', async () => {

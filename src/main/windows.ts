@@ -33,6 +33,7 @@ const here = import.meta.dirname
 const OFFLINE_PAGE = join(here, '../renderer/offline.html')
 const WELCOME_PAGE = join(here, '../renderer/welcome.html')
 const EDIT_PAGE = join(here, '../renderer/edit.html')
+const SETTINGS_PAGE = join(here, '../renderer/settings.html')
 
 /** 与站点无关的窗口默认项：隔离、无 Node、沙箱。 */
 const BASE_WEB_PREFERENCES = {
@@ -761,5 +762,33 @@ export function createEditWindow(): BrowserWindow {
   })
   if (shouldRemoveWindowMenuBar(process.platform)) win.removeMenu()
   void win.loadFile(EDIT_PAGE)
+  return win
+}
+
+/**
+ * 创建「客户端设置」窗口。
+ *
+ * 设置项全部是**壳自身**的行为偏好（通知、启动、关窗、更新），因此本窗口与
+ * 主机无关：它不需要 partition、不加载远端页面、也不随当前主机变化。用
+ * `BASE_WEB_PREFERENCES`（隔离 + 无 Node + 沙箱）即可，与欢迎页/编辑页同一套。
+ *
+ * 移除窗口菜单栏：菜单项全部作用于主机窗口或整个应用，而本窗口只是改几个
+ * 偏好；留着菜单栏会让用户在设置窗口里点「删除主机…」而作用到别处——与
+ * 编辑窗口移除菜单栏是同一个理由（「菜单栏只长在主机窗口上」这条规则的延伸）。
+ *
+ * @returns 已开始加载的窗口。
+ */
+export function createSettingsWindow(): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 560,
+    height: 640,
+    title: '客户端设置',
+    webPreferences: {
+      ...BASE_WEB_PREFERENCES,
+      preload: join(here, '../preload/settings.cjs'),
+    },
+  })
+  if (shouldRemoveWindowMenuBar(process.platform)) win.removeMenu()
+  void win.loadFile(SETTINGS_PAGE)
   return win
 }

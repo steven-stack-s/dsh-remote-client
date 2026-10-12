@@ -56,6 +56,8 @@ export interface TrayDeps {
   onResetLogin: (host: HostEntry) => void
   /** 删除指定主机（实现侧负责弹确认框与善后）。 */
   onRemoveHost: (host: HostEntry) => void
+  /** 打开「客户端设置」窗口。 */
+  onOpenSettings: () => void
 }
 
 /** 托盘句柄。 */
@@ -141,6 +143,15 @@ function toMenuItem(kind: TrayMenuItemKind, deps: TrayDeps): MenuItemConstructor
         accelerator: MENU_ACCELERATORS.editHost,
         enabled: canOpenEditWindow(deps.getData().hosts.length),
         click: () => { deps.onEditCurrentHost() },
+      }
+    case 'settings':
+      // 快捷键与菜单栏的「设置…」保持一致（这里写出来只是让托盘菜单也显示提示；
+      // 真正的全局注册在 application menu 上，另有窗口内的 before-input-event，
+      // 因为 Windows 上无边框窗口的菜单栏不显示、只靠 application menu 会按了没反应）。
+      return {
+        label: TRAY_MENU_LABELS.settings,
+        accelerator: MENU_ACCELERATORS.settings,
+        click: () => { deps.onOpenSettings() },
       }
     case 'quit':
       return { label: TRAY_MENU_LABELS.quit, click: () => { deps.onQuit() } }

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, Notification } from 'electron'
 import { addHost, loadHosts, loadHostsSync, removeHost, replaceHost, resolveStartupHost, saveHosts, touchHost } from './hosts.js'
-import { createEditWindow, createHostWindow, createOfflineWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
+import { createEditWindow, createHostWindow, createOfflineWindow, createSettingsWindow, createWelcomeWindow, type HostWindowHandle } from './windows.js'
 import { createTray, type TrayDeps, type TrayHandle } from './tray.js'
 import { installAppMenu, type AppMenuHandle } from './menu.js'
 import { clearHostLoginState } from './host-menu.js'
@@ -17,6 +17,8 @@ import { insecureOriginsSwitchValue } from '../shared/origin.js'
 import { parseHostInput } from '../shared/host-input.js'
 import { parseThemeSource } from '../shared/desktop-shell.js'
 import { createNotifier, createQuietGate, parseNotifyRequest, type NotifyContext } from './notifications.js'
+import { loadSettings, loadSettingsSync, saveSettings } from './settings-store.js'
+import { DEFAULT_SETTINGS, normalizeSettings, type ClientSettings } from '../shared/settings.js'
 import {
   installUpdater,
   updaterDeps,
@@ -70,6 +72,17 @@ let currentWindow: HostWindowHandle | undefined
 let hostsData: HostsFile = { version: 1, hosts: [] }
 let currentHostId: string | undefined
 let tray: TrayHandle | undefined
+
+/**
+ * 内存中的设置镜像。
+ *
+ * 与 `hostsData` 同一套做法：启动时读一次，之后写盘即同步更新内存。设置窗口
+ * 的 `load` 读的是它而不是重新读盘，因此界面拿到的必然是最后一次成功保存的值。
+ *
+ * 初值用 `DEFAULT_SETTINGS` 的**副本**：模块顶层的 `boot()` 之前也可能有读取
+ * （见 `hideOnClose` 的消费点），而直接引用那个常量会让「谁改了它」难以追查。
+ */
+let settingsData: ClientSettings = { ...DEFAULT_SETTINGS }
 
 /**
  * Windows 的「应用用户模型 ID」（AppUserModelID）。
@@ -165,6 +178,35 @@ let editingHostId: string | undefined
 
 /** 编辑窗口的 webContents id 集合，用于校验 IPC sender。 */
 const editWebContentsIds = new Set<number>()
+
+/** 设置窗口的 webContents id 集合，用于校验 IPC sender。 */
+const settingsWebContentsIds = new Set<number>()
+
+/**
+ * 打开「客户端设置」窗口。
+ *
+ * 只允许同时存在一个：这是**全局**设置的编辑界面（不是每台主机一份），重复打开
+ * 会得到两个各自加载了同一份文件的窗口，两边分别保存会互相覆盖——与编辑窗口
+ * 同一考虑（那里的成对保存还会指向同一条记录）。
+ *
+ * 已打开时把它唤到前台，而不是直接 return：用户点「客户端设置」却什么都没发生，
+ * 比看到一个已经开着的窗口更让人困惑（窗口可能被别的窗口盖住了）。
+ */
+function openSettingsWindow(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    if (!settingsWebContentsIds.has(win.webContents.id)) continue
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+    return
+  }
+
+  const win = createSettingsWindow()
+  const id = win.webContents.id
+  settingsWebContentsIds.add(id)
+  win.on('closed', () => { settingsWebContentsIds.delete(id) })
+}
 
 /**
  * 打开「编辑主机」窗口。
@@ -321,6 +363,20 @@ async function persist(next: HostsFile): Promise<void> {
 }
 
 /**
+ * 更新内存中的设置并落盘。
+ *
+ * **刻意不调用 `refreshChrome()`**：设置项目前不影响菜单或托盘的形态（不像主机
+ * 增删会改列表），因此没有需要重建的界面。日后若加了会影响菜单的设置项
+ * （例如「显示托盘图标」），记得在这里补一次刷新。
+ *
+ * @param next - 新设置。
+ */
+async function persistSettings(next: ClientSettings): Promise<void> {
+  settingsData = next
+  await saveSettings(dataDir, next)
+}
+
+/**
  * 请求删除一台主机：先弹确认框，确认后才真正移除。
  *
  * 删除是不可撤销的（该主机的登录态 partition 会变成孤儿数据），因此必须
@@ -468,6 +524,7 @@ function installTray(): void {
       onRetryNow: () => { currentWindow?.retryNow() },
       onResetLogin: host => { resetHostLoginState(host) },
       onRemoveHost: host => { void requestRemoveHost(host) },
+      onOpenSettings: () => { openSettingsWindow() },
     }
     tray = createTray(deps)
   } catch (error) {
@@ -494,6 +551,7 @@ function installAppMenuBar(): void {
       onRemoveHost: host => { void requestRemoveHost(host) },
       onEditCurrentHost: () => { openEditCurrentHost() },
       onRemoveCurrentHost: () => { removeCurrentHost() },
+      onOpenSettings: () => { openSettingsWindow() },
       onQuit: () => { app.quit() },
     })
   } catch (error) {
@@ -534,12 +592,27 @@ async function boot(): Promise<void> {
   installShellChrome()
 
   try {
+    // 设置必须在读主机之前载入：主机窗口的创建会读 `settingsData`（例如关窗
+    // 行为与链接分流开关），先读设置才能保证窗口一出生就用对配置。
+    settingsData = await loadSettings(dataDir)
+
     const data = await loadHosts(dataDir)
     const host = resolveStartupHost(data)
 
     if (host === undefined) {
       // 无主机：打开欢迎页让用户添加第一台。
       hostsData = data
+      refreshChrome()
+      openWelcomeWindow()
+      return
+    }
+
+    // 「每次显示『添加主机』页」：用户选了它就不自动开主机窗口，但仍然要把
+    // 主机数据与「上次使用的主机」记好——他从欢迎页添加/打开主机时用得到。
+    if (settingsData.startupBehavior === 'welcome') {
+      hostsData = data
+      currentHostId = host.id
+      await saveHosts(dataDir, touchHost(data, host.id))
       refreshChrome()
       openWelcomeWindow()
       return
@@ -832,6 +905,40 @@ ipcMain.handle('shell:edit:save', async (event, input: unknown) => {
 
 ipcMain.on('shell:edit:close', event => {
   if (!editWebContentsIds.has(event.sender.id)) return
+  BrowserWindow.fromWebContents(event.sender)?.close()
+})
+
+// 设置窗口的 IPC。与编辑窗口同一道 sender 校验：远端主机页面是本项目明确
+// 认定的不可信内容，绝不能让它读写壳的偏好（例如把通知关掉、把更新检查关掉）。
+
+/**
+ * 读取当前设置。
+ *
+ * 返回的是**内存镜像**（`settingsData`）而不是重新读盘：它与设置窗口的保存
+ * 走同一条路，因此界面看到的必然是最后一次成功保存的值。
+ */
+ipcMain.handle('shell:settings:load', event => {
+  if (!settingsWebContentsIds.has(event.sender.id)) return settingsData
+  return settingsData
+})
+
+ipcMain.handle('shell:settings:save', async (event, input: unknown) => {
+  if (!settingsWebContentsIds.has(event.sender.id)) {
+    return { ok: false as const, message: '无权修改客户端设置' }
+  }
+  // 界面送来的值按**外部输入**处理：逐字段校验并钳制（normalizeSettings），
+  // 而不是信任渲染进程。界面层也钳了一次，但那是为了即时反馈，不是安全边界。
+  const next = normalizeSettings(input)
+  try {
+    await persistSettings(next)
+    return { ok: true as const }
+  } catch (error) {
+    return { ok: false as const, message: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.on('shell:settings:close', event => {
+  if (!settingsWebContentsIds.has(event.sender.id)) return
   BrowserWindow.fromWebContents(event.sender)?.close()
 })
 

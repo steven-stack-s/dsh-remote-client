@@ -37,6 +37,8 @@ export interface AppMenuDeps {
   onEditCurrentHost: () => void
   /** 删除当前主机（作用于当前主机，复用同一套确认框）。 */
   onRemoveCurrentHost: () => void
+  /** 打开「客户端设置」窗口。 */
+  onOpenSettings: () => void
   /** 退出应用。 */
   onQuit: () => void
 }
@@ -103,6 +105,12 @@ function toEditMenuItem(kind: EditMenuItemKind, deps: AppMenuDeps): MenuItemCons
       }
     case 'separator':
       return { type: 'separator' }
+    case 'settings':
+      return {
+        label: '设置…',
+        accelerator: MENU_ACCELERATORS.settings,
+        click: () => { deps.onOpenSettings() },
+      }
     case 'quit':
       return {
         label: '退出',

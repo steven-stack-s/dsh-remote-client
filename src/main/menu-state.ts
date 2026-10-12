@@ -127,6 +127,7 @@ export type EditMenuItemKind =
   | 'editHost'
   | 'removeHost'
   | 'separator'
+  | 'settings'
   | 'quit'
 
 /**
@@ -134,7 +135,10 @@ export type EditMenuItemKind =
  *
  * **「添加主机…」与「编辑主机…/删除主机…」之间刻意没有分隔线**（用户明确要求）：
  * 三者都是同一层级的「主机管理」操作，加线反而把它们割裂成两组。
- * 「退出」前的那条分隔线**保留**——退出与前四项不是一类东西，混在一起容易误点。
+ *
+ * **「设置…」两侧各有一条分隔线**：它作用于**整个客户端**（通知、启动、关窗、
+ * 更新），与前面三项的「主机管理」不是一类东西。这一对线与「退出」前那条是
+ * 同一种用法——用分隔线把「不同作用对象」的项分开，避免误点。
  *
  * 把它做成纯函数是为了让这条布局契约有测试守护：日后有人「顺手」补一条分隔线回去，
  * 测试会立刻变红。
@@ -142,7 +146,7 @@ export type EditMenuItemKind =
  * @returns 按显示顺序排列的项种类。
  */
 export function editMenuLayout(): readonly EditMenuItemKind[] {
-  return ['addHost', 'editHost', 'removeHost', 'separator', 'quit']
+  return ['addHost', 'editHost', 'removeHost', 'separator', 'settings', 'separator', 'quit']
 }
 
 /**
@@ -154,8 +158,8 @@ export function editMenuLayout(): readonly EditMenuItemKind[] {
  *
  * `editHost` 的 `Ctrl+E` 是补上的：它此前**没有任何快捷键**（不是有意为之，
  * 只是当初漏了）。补它之前先确认过没有冲突——本项目已占用的是
- * `Ctrl+N`（添加主机）、`Ctrl+Q`（退出）、`Ctrl+R`（刷新）、
- * `Ctrl+Shift+I`/`F12`（DevTools）、`Ctrl+W`（内容窗口关闭）。
+ * `Ctrl+N`（添加主机）、`Ctrl+E`（编辑主机）、`Ctrl+,`（设置）、`Ctrl+Q`（退出）、
+ * `Ctrl+R`（刷新）、`Ctrl+Shift+I`/`F12`（DevTools）、`Ctrl+W`（内容窗口关闭）。
  * 选 `E` 是为了与 `Ctrl+N`（New）对称，Edit 同样取首字母。
  *
  * **「删除主机…」刻意不设快捷键**：它是不可撤销的破坏性操作（虽然弹确认框，
@@ -165,6 +169,13 @@ export function editMenuLayout(): readonly EditMenuItemKind[] {
 export const MENU_ACCELERATORS = {
   addHost: 'CmdOrCtrl+N',
   editHost: 'CmdOrCtrl+E',
+  /**
+   * 「设置…」用 `Ctrl+,`（macOS 惯例是 `Cmd+,`）。
+   *
+   * 这是**全平台的设置惯例**（VS Code、Chrome、各种编辑器都是它），用户不需要学。
+   * `CmdOrCtrl` 会按平台自动选修饰键，与其余快捷键同一套规则。
+   */
+  settings: 'CmdOrCtrl+,',
   quit: 'CmdOrCtrl+Q',
 } as const
 
@@ -235,7 +246,7 @@ export function hostAfterEditEffect(input: {
  * `editHost` 是后加回来的，原因见 `trayMenuLayout()`——不是推翻时判断错了，
  * 而是那条判断赖以成立的前提消失了。
  */
-export type TrayMenuItemKind = 'open' | 'hosts' | 'addHost' | 'editHost' | 'quit'
+export type TrayMenuItemKind = 'open' | 'hosts' | 'addHost' | 'editHost' | 'settings' | 'quit'
 
 /** 托盘菜单文案。 */
 export const TRAY_MENU_LABELS: Record<TrayMenuItemKind, string> = {
@@ -245,6 +256,9 @@ export const TRAY_MENU_LABELS: Record<TrayMenuItemKind, string> = {
   hosts: '主机列表',
   addHost: '添加主机…',
   editHost: '编辑主机…',
+  // 叫「客户端设置」而不是「设置…」：托盘菜单里紧挨着的「添加主机…」「编辑主机…」
+  // 都作用于主机，不写清对象会让人以为这也是主机维度的设置。
+  settings: '客户端设置',
   quit: '关闭客户端',
 }
 
@@ -278,9 +292,13 @@ export type TrayMenuEntry = TrayMenuItemKind | 'separator'
  * @returns 按显示顺序排列的菜单项与分隔线。
  */
 export function trayMenuLayout(): readonly TrayMenuEntry[] {
-  // 顺序：日常操作（打开）→ 主机的集合与管理 → 退出。
-  // 分隔线把「打开客户端」「主机管理」「关闭客户端」三段分开，避免误点退出。
-  return ['open', 'separator', 'hosts', 'addHost', 'editHost', 'separator', 'quit']
+  // 顺序：日常操作（打开）→ 主机的集合与管理 → 客户端自身 → 退出。
+  // 分隔线把「打开客户端」「主机管理」「设置」「关闭客户端」四段分开，避免误点退出。
+  //
+  // 「客户端设置」必须在这里出现（而不只是菜单栏）：Windows 上主机窗口是无边框的，
+  // 菜单栏根本不显示，托盘是该平台上唯一可视的入口。这与 `editHost` 回到托盘是
+  // 同一个理由——见上面那段历史。
+  return ['open', 'separator', 'hosts', 'addHost', 'editHost', 'separator', 'settings', 'separator', 'quit']
 }
 
 /** 「打开客户端」时应对哪个窗口下手。 */

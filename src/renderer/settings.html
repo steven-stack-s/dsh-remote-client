@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>客户端设置</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0; height: 100vh; display: grid; place-content: center;
+        background: #151517; color: #e6edf3;
+        font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      form { width: 480px; display: grid; gap: 4px; }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      h2 {
+        font-size: 13px; margin: 14px 0 6px; color: #8b949e;
+        font-weight: 600; letter-spacing: 0.02em;
+      }
+      .row {
+        display: grid; grid-template-columns: 20px 1fr; gap: 4px 10px;
+        align-items: start; padding: 7px 0;
+      }
+      .row input[type="checkbox"] { margin-top: 2px; }
+      .row label { font-size: 14px; cursor: pointer; }
+      .row .desc {
+        grid-column: 2; font-size: 12px; color: #8b949e;
+        line-height: 1.6; margin: 0;
+      }
+      .field {
+        display: grid; grid-template-columns: 1fr auto; gap: 4px 10px;
+        align-items: center; padding: 7px 0;
+      }
+      .field > label { font-size: 14px; }
+      .field .desc {
+        grid-column: 1 / -1; font-size: 12px; color: #8b949e;
+        line-height: 1.6; margin: 0;
+      }
+      input[type="number"], select {
+        padding: 7px 10px; font-size: 14px; border-radius: 8px;
+        border: 1px solid #30363d; background: #0d1117; color: #e6edf3;
+      }
+      input[type="number"] { width: 90px; }
+      select { width: 100%; }
+      input:disabled, select:disabled { opacity: 0.6; }
+      button {
+        padding: 10px; font-size: 14px; border: 0; border-radius: 8px;
+        background: #4c8bf5; color: #fff; cursor: pointer;
+      }
+      button.secondary { background: #30363d; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      p.err { color: #f85149; font-size: 13px; min-height: 18px; margin: 0; }
+      p.ok { color: #3fb950; font-size: 13px; min-height: 18px; margin: 0; }
+      p.hint { color: #8b949e; font-size: 12px; line-height: 1.7; margin: 0; }
+      .actions { display: flex; gap: 10px; margin-top: 10px; }
+      .actions button { flex: 1; }
+    </style>
+  </head>
+  <body>
+    <form id="form">
+      <h1>客户端设置</h1>
+      <p class="hint">这些设置只作用于本客户端（通知、启动与关窗行为），不影响远端 dsh 本身。</p>
+
+      <h2>通知</h2>
+
+      <div class="row">
+        <input type="checkbox" id="notifyEnabled" />
+        <label for="notifyEnabled">弹出系统通知</label>
+        <p class="desc">关闭后，审批请求与新消息都不再弹出系统通知。</p>
+      </div>
+
+      <div class="field">
+        <label for="quietSec">消息通知的静默期</label>
+        <input type="number" id="quietSec" min="15" max="300" step="1" />
+        <p class="desc">
+          一轮输出结束后，再等这么久仍没有新的输出，才认为 agent 真的停下了并提醒你。
+          设得太短，一次较慢的工具调用就会被误判成结束（提前提醒）；太长则要等很久才收到提醒。
+          范围 15–300 秒。审批通知不受它影响，始终立即弹出。
+        </p>
+      </div>
+
+      <h2>启动与关窗</h2>
+
+      <div class="field">
+        <label for="startupBehavior">启动时</label>
+        <select id="startupBehavior">
+          <option value="lastHost">打开上次使用的主机</option>
+          <option value="welcome">每次显示「添加主机」页</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <input type="checkbox" id="hideOnClose" />
+        <label for="hideOnClose">关闭窗口时收进托盘（不退出）</label>
+        <p class="desc">
+          开启时，点关闭按钮只是把窗口收进系统托盘，客户端仍在后台运行，可从托盘重新打开。
+          关闭它则关窗即退出客户端。macOS 上此项目前不起作用（该平台本就关窗不退出）。
+        </p>
+      </div>
+
+      <h2>更新</h2>
+
+      <div class="row">
+        <input type="checkbox" id="updateCheckEnabled" />
+        <label for="updateCheckEnabled">启动后在后台检查新版本</label>
+        <p class="desc">
+          关闭后不再自动检查更新（也不会有「是否重启安装」的询问）。仅对安装版生效。
+        </p>
+      </div>
+
+      <p class="err" id="err"></p>
+      <p class="ok" id="saved"></p>
+
+      <div class="actions">
+        <button type="button" class="secondary" id="cancel">关闭</button>
+        <button type="submit" id="save">保存</button>
+      </div>
+    </form>
+    <script>
+      const form = document.getElementById('form')
+      const err = document.getElementById('err')
+      const saved = document.getElementById('saved')
+      const saveBtn = document.getElementById('save')
+      const cancelBtn = document.getElementById('cancel')
+      const notifyEnabled = document.getElementById('notifyEnabled')
+      const quietSec = document.getElementById('quietSec')
+      const startupBehavior = document.getElementById('startupBehavior')
+      const hideOnClose = document.getElementById('hideOnClose')
+      const updateCheckEnabled = document.getElementById('updateCheckEnabled')
+
+      // 与 src/shared/settings.ts 的常量保持一致。这里重复一份是因为该模块
+      // 用的是 ESM 导出，而本页是 file:// 下的普通 script（无打包器）——
+      // 重复的代价是「改一处要记得改另一处」，但这两个数字同时出现在界面提示
+      // 文案里（15–300 秒），漂移会立刻被用户看见。
+      const QUIET_SEC_MIN = 15
+      const QUIET_SEC_MAX = 300
+
+      /** 把毫秒钳制到合法区间；非有限值回退到下限。 */
+      function clampSec(value) {
+        if (!Number.isFinite(value)) return QUIET_SEC_MIN
+        return Math.min(QUIET_SEC_MAX, Math.max(QUIET_SEC_MIN, Math.round(value)))
+      }
+
+      /**
+       * 把设置填进界面。
+       *
+       * @param {object} settings - 主进程读到的设置。
+       */
+      function fill(settings) {
+        notifyEnabled.checked = settings.notifyEnabled
+        quietSec.value = String(Math.round(settings.notifyQuietMs / 1000))
+        startupBehavior.value = settings.startupBehavior
+        hideOnClose.checked = settings.hideOnClose
+        updateCheckEnabled.checked = settings.updateCheckEnabled
+      }
+
+      form.addEventListener('submit', async event => {
+        event.preventDefault()
+        err.textContent = ''
+        saved.textContent = ''
+        saveBtn.disabled = true
+
+        // 在界面层就钳一次：用户可能输入 0 或 9999，交给主进程钳制虽然也对，
+        // 但先把输入框纠正过来，用户能立刻看到自己填的值被改成了什么。
+        const seconds = clampSec(Number(quietSec.value))
+        quietSec.value = String(seconds)
+
+        const result = await window.shell.save({
+          notifyEnabled: notifyEnabled.checked,
+          notifyQuietMs: seconds * 1000,
+          startupBehavior: startupBehavior.value,
+          hideOnClose: hideOnClose.checked,
+          updateCheckEnabled: updateCheckEnabled.checked,
+        })
+        if (!result.ok) {
+          err.textContent = result.message
+          saveBtn.disabled = false
+          return
+        }
+        saved.textContent = '已保存。'
+        saveBtn.disabled = false
+      })
+
+      cancelBtn.addEventListener('click', () => { window.shell.close() })
+
+      // 初始化：读一次当前设置填进界面。
+      void (async () => {
+        fill(await window.shell.load())
+      })()
+    </script>
+  </body>
+</html>
