@@ -88,24 +88,40 @@ describe('测试自身的平台中立性（0.2.0 首次发布构建失败的根�
     const { readFile } = await import('node:fs/promises')
     const source = await readFile(join(import.meta.dirname, 'settings-store.test.ts'), 'utf8')
 
-    // 匹配「把**函数调用结果**直接比字面量绝对路径」的**实际断言代码**。
-    // 只认 `expect(...)` 开头的行，因此注释里的反例（本函数自己也引用了那段
-    // 错误写法作为说明）不会被误报——这条规则我踩过一次：第一版直接对全文
-    // 做正则，结果把守卫自己的注释匹配了。
+    // 匹配「把**平台相关的路径函数结果**直接比字面量绝对路径」的**实际断言代码**。
+    // 覆盖两类（第二类正是我第二次踩的坑）：
+    //   a. `expect(settingsFilePath('…')).toBe('/字面量')`
+    //   b. `expect(join('…')).toBe('/字面量')`  —— `join` 也是平台相关的
+    // 只认 `expect(` 开头的行，因此注释里的反例（本函数自己也引用了那段错误写法
+    // 作为说明）不会被误报——这条规则我踩过一次：第一版直接对全文做正则，
+    // 结果把守卫自己的注释匹配了。
     const dangerous = source
       .split('\n')
       .filter(line => /^\s*expect\(/u.test(line))
-      .filter(line => /settingsFilePath\([^)]*\)\s*\)\s*\.toBe\(\s*['"]\//u.test(line))
+      .filter(line => /(settingsFilePath\([^)]*\)|\bjoin\([^)]*\))\s*\)\s*\.toBe\(\s*['"]\//u.test(line))
     expect(
       dangerous,
-      'settingsFilePath 的结果被拿去比字面量路径——在 Linux 上恒真、在 Windows CI 上必红，请改用 join() 拼期望值',
+      '平台相关的路径结果被拿去比字面量——在 Linux 上恒真、在 Windows CI 上必红，'
+      + '且本机永远复现不了。请改为与另一个平台无关的量比较，或用 win32/posix 显式指定',
     ).toEqual([])
   })
 
-  it('join 在两种平台上的产出确实不同（这条盲区的证据）', () => {
+  it('分隔符的差异确实存在（这条盲区的证据）', () => {
     // 固化「为什么上一条必须做源码级检查」：两种平台的产出形式不同。
-    expect(join('/tmp/x', 'settings.json')).toBe('/tmp/x/settings.json')
-    expect(win32.join('/tmp/x', 'settings.json')).not.toBe('/tmp/x/settings.json')
+    //
+    // ⚠️ **这里绝不能引用本机的 `join`**。我前两版都栽在这上面：
+    // 第一版 `expect(join('/tmp/x',...)).toBe('/tmp/x/settings.json')` 在 Linux
+    // 上绿、windows-latest 上红（CI 原话：expected '\tmp\x\settings.json' to be
+    // '/tmp/x/settings.json'）；第二版改成拿 `join` 与 `win32.join` 比，又在
+    // Windows 上必然相等（那里 `join === win32.join`）而红。
+    //
+    // 唯一在两边都成立、且不引用 `join` 的写法：只比较两个**显式指定的**平台。
+    const posixForm = '/tmp/x/settings.json'
+    const winForm = win32.join('/tmp/x', 'settings.json')
+
+    expect(winForm).not.toBe(posixForm)
+    // win32 的产出换成 `/` 之后才是 posix 形态——用这个表达「差别只在分隔符」。
+    expect(winForm.replace(/\\/gu, '/')).toBe(posixForm)
   })
 
   it('settingsFilePath 与 join 的产出一致（当前实现）', () => {
