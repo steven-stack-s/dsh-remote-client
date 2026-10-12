@@ -152,6 +152,31 @@ describe('构建产物', () => {
     expect(main).toMatch(/double-click[\s\S]{0,80}?onOpen\(\)/)
   })
 
+  it('主机级 IPC 按「发送方那一台」解析，而不是取「当前窗口」（task-19）', async () => {
+    requireBuilt()
+    const main = await readFile(join(outDir, 'main', 'index.js'), 'utf8')
+
+    // task-19 把主机窗口从「同一时刻只有一个」改成注册表（多主机并行），并修掉了
+    // 三处 sender 校验——它们此前只认**单个** webContents id，多窗口下会让第二台
+    // 主机的上报（网络恢复、主题、通知）被静默丢弃：不报错、不提示，只是「功能
+    // 在第二台主机上不工作」。这几个 handler 在 index.ts 里，而那个文件 import 了
+    // electron、单测跑不起来，所以按产物形态守一道。
+    //
+    // 断言**具体接线**而不是「某个符号还在文件里」——后者挡不住回归：只要 import
+    // 没删，把调用点改成别的实现也照样通过（我实测过）。这里要求 `shell:notify`
+    // 的 handler 真的用 sender 解出句柄、且上下文取自那个句柄。
+    const notifyHandler = main.slice(main.indexOf('ipcMain.on("shell:notify"'))
+    const notifyBody = notifyHandler.slice(0, notifyHandler.indexOf('quietGate.pulse'))
+
+    expect(notifyBody, 'notify handler 未按 sender 解析主机窗口')
+      .toContain('findHostWindowByWebContents')
+    expect(notifyBody, 'notify handler 未从 sender 反查窗口句柄')
+      .toContain('event.sender.id')
+    // 焦点判定与点击唤起都必须取自**发送方那一台**，不是「当前主机窗口」。
+    expect(notifyBody).toMatch(/windowFocused:\s*senderHandle/u)
+    expect(notifyBody).toMatch(/onActivate:\s*\(\)\s*=>\s*\{\s*senderHandle\.show/u)
+  })
+
   it('主进程请求了单实例锁（否则重复点图标会开出多个实例与多个托盘）', async () => {
     requireBuilt()
     const main = await readFile(join(outDir, 'main', 'index.js'), 'utf8')
