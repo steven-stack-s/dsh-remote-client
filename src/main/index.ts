@@ -349,6 +349,8 @@ function openHost(host: HostEntry): void {
     () => quitting,
     // 关窗行为取**当前**设置（现取），因此用户在设置里改完立刻对已开的窗口生效。
     () => settingsData.hideOnClose,
+    // 窗口内的 Ctrl+, 入口（Windows 上菜单栏不显示，只靠 application menu 会没反应）。
+    () => { openSettingsWindow() },
   )
   currentWindow.win.on('closed', () => { currentWindow = undefined })
 }

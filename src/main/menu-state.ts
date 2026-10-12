@@ -398,6 +398,29 @@ export function matchesReloadChord(chord: KeyChord): boolean {
 }
 
 /**
+ * 是否为「打开客户端设置」（Windows/Linux `Ctrl+,`，macOS `Cmd+,`）。
+ * 与 `MENU_ACCELERATORS.settings` 是**同一个键位**的两种注册方式，两者必须一致：
+ * - application menu 上的 `accelerator` 负责让系统菜单显示并响应它；
+ * - 本函数供 `windows.ts` 的 `before-input-event` 使用。
+ *
+ * **为什么两处都要注册**：Windows 上主机窗口是无边框的（为了让顶部跟随应用主题，
+ * 见 `desktop-shell.ts`），Electron 对 frameless 的定义是 no chrome、chrome 明确
+ * 包含 toolbars——菜单栏随之消失，`setMenuBarVisibility(false)` 只是把这件事写死。
+ * 只注册 application menu 的结果就是：Windows 用户按 `Ctrl+,` **毫无反应**。
+ * 这正是 `Ctrl+W` 目前的处境（它的匹配函数有实现有单测，但唯一调用点在死代码里）。
+ *
+ * 不吞 Shift/Alt 组合：`Ctrl+Shift+,` 之类的组合留给页面自己。
+ *
+ * @param chord - 按键组合。
+ * @returns 匹配时返回 true。
+ */
+export function matchesSettingsChord(chord: KeyChord): boolean {
+  if (chord.key !== ',') return false
+  if (chord.shift || chord.alt) return false
+  return primaryModifierPressed(chord)
+}
+
+/**
  * 是否为「开关 DevTools」。
  *
  * Electron **默认不提供** DevTools 快捷键（那是 Chrome 的行为，不是 Electron 的），
@@ -419,6 +442,27 @@ export function matchesDevToolsChord(chord: KeyChord): boolean {
   if (key !== 'i') return false
   if (!primaryModifierPressed(chord)) return false
   return chord.platform === 'darwin' ? chord.alt : chord.shift
+}
+
+/**
+ * 打开 DevTools 时使用的选项：**在窗口内**（右侧分栏）打开，而不是独立窗口。
+ *
+ * 单独成函数有两个理由：
+ * 1. 把「内嵌而非独立窗口」这个决定固化在**一处**，`windows.ts` 只负责调用
+ *    （`devToolsOpenOptions()`），日后要改只改这里；
+ * 2. 它是纯数据，可以被单测钉住——`openDevTools` 的调用点在 `windows.ts` 里，
+ *    那个文件 import 了 electron、跑不了单测，因此**这个决定必须落在能测的地方**，
+ *    否则「改回独立窗口」这种回归没有任何测试能挡住。
+ *
+ * 每次都返回**新对象**：调用方拿到后可能就地改（或传给别的 API），共用同一个
+ * 可变对象会让一次意外修改影响后续所有调用。
+ *
+ * @returns `openDevTools` 的选项。
+ */
+export function devToolsOpenOptions(): { mode: 'right' } {
+  // 用 `right` 而非 `bottom`：dsh 是左右分栏的界面，底部面板会挤压对话区，
+  // 右侧分栏更像浏览器的 DevTools，也更符合用户按 F12 时的预期。
+  return { mode: 'right' }
 }
 
 /**

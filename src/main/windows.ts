@@ -5,10 +5,12 @@ import { shouldHideOnClose } from './lifecycle.js'
 import { reloadTargetFor } from './reload.js'
 import {
   contentWindowWebPreferences,
+  devToolsOpenOptions,
   isSameAddress,
   matchesCloseChord,
   matchesDevToolsChord,
   matchesReloadChord,
+  matchesSettingsChord,
   navigationOutcome,
   shouldRemoveWindowMenuBar,
   windowOpenDecision,
@@ -64,6 +66,7 @@ function installWindowShortcuts(
   contents: WebContents,
   onReload: () => void,
   onClose?: () => void,
+  onOpenSettings?: () => void,
 ): void {
   contents.on('before-input-event', (event, input) => {
     if (input.type !== 'keyDown') return
@@ -79,10 +82,24 @@ function installWindowShortcuts(
       platform: process.platform,
     }
 
+    if (onOpenSettings !== undefined && matchesSettingsChord(chord)) {
+      event.preventDefault()
+      onOpenSettings()
+      return
+    }
+
     if (matchesDevToolsChord(chord)) {
       event.preventDefault()
-      // 用 toggle 而非 open：再按一次要能关掉（Chrome 的习惯行为）。
-      contents.toggleDevTools()
+      // 已开则关、未开则按**内嵌**模式打开。
+      //
+      // 刻意不用 `toggleDevTools()`：它不接受 mode 参数，开出来的形态取决于
+      // Electron 记住的上次模式——默认是 detach（独立窗口），与我们想要的
+      // 「在窗口内打开」正相反。这里显式指定 mode，结果才是确定的。
+      if (contents.isDevToolsOpened()) {
+        contents.closeDevTools()
+      } else {
+        contents.openDevTools(devToolsOpenOptions())
+      }
       return
     }
 
@@ -361,6 +378,8 @@ function titlebarOverlayOptions(): TitlebarOverlayOptions {
  * @param getHideOnClose - 取「关窗是否收进托盘」这一用户设置的函数。**传函数而非
  *   布尔值**：窗口是长期存活的，而用户随时可能去设置窗口改掉它；传快照会让改完
  *   之后已开的窗口仍旧按旧设置行事，看起来就像设置没生效。
+ * @param onOpenSettings - 打开「客户端设置」窗口。挂在窗口内快捷键上，因为
+ *   Windows 上无边框窗口不显示菜单栏（见 `matchesSettingsChord` 的说明）。
  * @returns 窗口句柄，调用方据此控制重试与查询状态。
  */
 export function createHostWindow(
@@ -370,6 +389,7 @@ export function createHostWindow(
   onOfflineChange: (offline: boolean) => void = () => undefined,
   isQuitting: () => boolean = () => false,
   getHideOnClose: () => boolean = () => true,
+  onOpenSettings: () => void = () => undefined,
 ): HostWindowHandle {
   // 主机配置是**可变状态**，不是闭包里的快照。下面所有 `host.*` 读取的都是
   // 这个变量，因此 `updateHost()` 之后立即生效。
@@ -637,16 +657,21 @@ export function createHostWindow(
   }
 
   /**
-   * 窗口级快捷键：重新加载（Ctrl/Cmd+R）与 DevTools（Ctrl+Shift+I、
-   * macOS 的 Cmd+Option+I、以及 F12）。
+   * 窗口级快捷键：重新加载（Ctrl/Cmd+R）、DevTools（Ctrl+Shift+I、
+   * macOS 的 Cmd+Option+I、以及 F12）与设置（Ctrl/Cmd+,）。
    *
    * 主机窗口与它打开的内容窗口都挂（后者见 `installContentWindowBehavior`）；
    * 欢迎页/编辑页是壳自有页面，不需要 DevTools 与「重新请求 host.origin」。
    *
    * 这里重载走 `reload()`（重新请求 `host.origin`），而不是普通 `webContents.reload()`
    * ——原因见上面 `reload` 的说明。
+   *
+   * `Ctrl+,` 挂在这里的理由：Windows 上主机窗口是无边框的、菜单栏不显示，只注册
+   * application menu 会让它在该平台按了毫无反应（见 `matchesSettingsChord`）。
+   * **主机窗口刻意不接 `Ctrl+W`**——它的关窗语义是「隐藏到托盘」，误触会让人以为
+   * 应用没了（见 `matchesCloseChord` 的说明）。
    */
-  installWindowShortcuts(win.webContents, reload)
+  installWindowShortcuts(win.webContents, reload, undefined, onOpenSettings)
 
   win.on('closed', () => {
     disposed = true
@@ -789,6 +814,11 @@ export function createEditWindow(): BrowserWindow {
  * 偏好；留着菜单栏会让用户在设置窗口里点「删除主机…」而作用到别处——与
  * 编辑窗口移除菜单栏是同一个理由（「菜单栏只长在主机窗口上」这条规则的延伸）。
  *
+ * 挂 `Ctrl+W` 关闭：这是**壳自有的工具窗口**，不是承载主机会话的主窗口——
+ * 关掉它就是关掉，不存在「隐藏到托盘」的语义（见 `matchesCloseChord` 的说明，
+ * 那条顾虑只针对主机窗口）。编辑窗口没挂是因为它一直由按钮关闭；设置窗口
+ * 作为「随手改几个设置就关掉」的窗口，`Ctrl+W` 才是符合直觉的出口。
+ *
  * @returns 已开始加载的窗口。
  */
 export function createSettingsWindow(): BrowserWindow {
@@ -802,6 +832,14 @@ export function createSettingsWindow(): BrowserWindow {
     },
   })
   if (shouldRemoveWindowMenuBar(process.platform)) win.removeMenu()
+
+  // `reload` 传 `webContents.reload`：本窗口是本地页面，没有「重新请求 host.origin」
+  // 那种语义（那是主机窗口专有的，见 reload.ts）。
+  installWindowShortcuts(
+    win.webContents,
+    () => { if (!win.isDestroyed()) win.webContents.reload() },
+    () => { if (!win.isDestroyed()) win.close() },
+  )
   void win.loadFile(SETTINGS_PAGE)
   return win
 }

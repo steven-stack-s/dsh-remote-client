@@ -13,6 +13,7 @@ import {
   matchesCloseChord,
   matchesDevToolsChord,
   matchesReloadChord,
+  matchesSettingsChord,
   isSameAddress,
   navigationOutcome,
   shouldQuitOnAllWindowsClosed,
@@ -736,5 +737,42 @@ describe('设置入口（task-19）', () => {
   it('Ctrl+, 与既有快捷键不冲突', () => {
     const values = Object.values(MENU_ACCELERATORS)
     expect(new Set(values).size).toBe(values.length)
+  })
+})
+
+describe('matchesSettingsChord（task-19：Ctrl+, 的窗口内注册）', () => {
+  const chord = (over: Partial<KeyChord> = {}): KeyChord => ({
+    key: ',',
+    control: false,
+    meta: false,
+    alt: false,
+    shift: false,
+    platform: 'win32',
+    ...over,
+  })
+
+  it('Windows/Linux：Ctrl+, 命中', () => {
+    expect(matchesSettingsChord(chord({ key: ',', control: true }))).toBe(true)
+  })
+
+  it('macOS：Cmd+, 命中，Ctrl+, 不命中（与其它快捷键同一套修饰键规则）', () => {
+    expect(matchesSettingsChord(chord({ platform: 'darwin', key: ',', meta: true }))).toBe(true)
+    expect(matchesSettingsChord(chord({ platform: 'darwin', key: ',', control: true }))).toBe(false)
+  })
+
+  it('不带修饰键的逗号不命中（用户要在输入框里正常打逗号）', () => {
+    expect(matchesSettingsChord(chord({ key: ',' }))).toBe(false)
+  })
+
+  it('Shift/Alt 组合不命中（不吞页面的其它组合）', () => {
+    expect(matchesSettingsChord(chord({ key: ',', control: true, shift: true }))).toBe(false)
+    expect(matchesSettingsChord(chord({ key: ',', control: true, alt: true }))).toBe(false)
+  })
+
+  it('与既有快捷键不冲突', () => {
+    const ctrlComma = chord({ key: ',', control: true })
+    expect(matchesDevToolsChord(ctrlComma)).toBe(false)
+    expect(matchesReloadChord(ctrlComma)).toBe(false)
+    expect(matchesCloseChord(ctrlComma)).toBe(false)
   })
 })
