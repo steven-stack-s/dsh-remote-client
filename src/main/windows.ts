@@ -93,8 +93,12 @@ function installWindowShortcuts(
       // 已开则关、未开则按**内嵌**模式打开。
       //
       // 刻意不用 `toggleDevTools()`：它不接受 mode 参数，开出来的形态取决于
-      // Electron 记住的上次模式——默认是 detach（独立窗口），与我们想要的
-      // 「在窗口内打开」正相反。这里显式指定 mode，结果才是确定的。
+      // Electron 记住的上次模式——默认是 detach（独立窗口）。这里显式指定 mode，
+      // **在有边框的窗口上**（设置/编辑/欢迎页）结果是确定的内嵌。
+      //
+      // 主机窗口（Windows 上无边框）用不上这个内嵌：frameless 窗口无法停靠
+      // DevTools，仍会弹独立窗口。这是已实测、已知、用户已接受的约束，
+      // 详见 `menu-state.ts` 的 `devToolsOpenOptions()`——**不要试图去修**。
       if (contents.isDevToolsOpened()) {
         contents.closeDevTools()
       } else {
@@ -447,6 +451,12 @@ export function createHostWindow(
     title: host.label,
     // 无边框：把顶上那一条让给 dsh 自绘。系统标题栏由操作系统绘制、网页 CSS
     // 够不着，不换掉它就永远停在系统配色上——用户换肤后「上面没变」就是这个。
+    //
+    // ⚠️ **副作用（已实测、已知、已接受）**：无边框窗口**无法停靠 DevTools**，
+    // 按 Ctrl+Shift+I / F12 会弹出独立窗口。同一份代码在有边框的设置窗口里是
+    // 内嵌的，因此这是窗口形态的约束，不是 mode 参数的问题。
+    // 用户已明确选择「保留自绘顶部、接受 DevTools 独立」（2026-10-12）。
+    // 详见 `menu-state.ts` 的 `devToolsOpenOptions()` 注释——**不要试图去修**。
     ...(customTitlebar
       ? {
           titleBarStyle: 'hidden' as const,
