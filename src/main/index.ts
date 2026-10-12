@@ -1242,8 +1242,11 @@ ipcMain.handle('shell:settings:checkUpdate', async event => {
   if (updaterHandle === undefined) {
     return { outcome: 'disabled' as const, version: app.getVersion() }
   }
-  const outcome = await updaterHandle.checkNow()
-  return { outcome, version: app.getVersion() }
+  // 版本号由更新时间器给出：界面文案「发现新版本 X」里的 X 是**新版本**，只有它知道
+  // （见 `UpdateCheckResult` 的说明）。这里**只透传，不替它补字段** —— 曾经这一行是
+  // `return { outcome, version: app.getVersion() }`，用当前版本冒充新版本，
+  // 于是界面把「发现新版本 0.2.2」显示成「发现新版本 0.2.1」（用户实测报告）。
+  return updaterHandle.checkNow()
 })
 
 ipcMain.handle('shell:settings:save', async (event, input: unknown) => {

@@ -5,8 +5,19 @@
     <title>客户端设置</title>
     <style>
       :root { color-scheme: light; }
+      /*
+       * ⚠ `min-height` 而不是 `height` —— 这一处曾有真机缺陷。
+       *
+       * 原来是 `height: 100vh; place-content: center`。当表单比视口高时（本页内容
+       * 确实会超出一屏），grid 的 track 被"居中"到容器外：**上半部分跑到负坐标**，
+       * 而滚动区域从 0 开始，于是顶部那截**用滚动条够不到** —— 用户看到的最上面一项
+       * 是"消息通知的静默期"，"客户端设置"标题与"弹出系统通知"开关凭空消失。
+       *
+       * 改成 `min-height` 后 body 随内容增高，超出时不再是"容器内居中"而是正常文档流，
+       * 顶部始终可达；内容不足一屏时（如窗口拉高）仍保持垂直居中。
+       */
       body {
-        margin: 0; height: 100vh; display: grid; place-content: center;
+        margin: 0; min-height: 100vh; display: grid; place-content: center;
         background: #ffffff; color: #1f2328;
         font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
       }
@@ -225,10 +236,17 @@
       // file:// 下的普通 script，import 不了 ESM 模块；与其把主进程的文案
       // 硬塞过来（那要新增一条 IPC 或内联整段逻辑），不如让结局枚举保持
       // 单一真源、文案各写一份——文案错了只是不好看，不会影响行为。
+      // 版本号兜底：与主进程 `updateVersionText()` 的语义保持一致（空值 → 「未知」）。
+      // 两处各写一份文案是刻意的（见下），但**兜底规则必须一致** —— 否则会出现
+      // 「主进程说未知、界面说空白」这种两头都对不上、却谁都不算错的现象。
+      const versionText = v => {
+        const t = String(v ?? '').trim()
+        return t === '' ? '未知' : t
+      }
       const CHECK_MESSAGES = {
         'up-to-date': () => '已是最新版本。',
-        'available': v => `发现新版本 ${v}，正在后台下载；下载完成后会询问是否重启。`,
-        'downloading': v => `新版本 ${v} 正在下载中，请稍候。`,
+        'available': v => `发现新版本 ${versionText(v)}，正在后台下载；下载完成后会询问是否重启。`,
+        'downloading': v => `新版本 ${versionText(v)} 正在下载中，请稍候。`,
         'error': () => '检查更新失败（网络不通或更新源异常）。稍后会再自动检查，不影响使用。',
         'disabled': () => '当前未启用更新检查（开发模式下不检查；也可能是你把上面的开关关掉了）。',
       }

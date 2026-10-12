@@ -100,6 +100,14 @@ async function fireDownloaded(version: string): Promise<void> {
 }
 
 /**
+ * 最近一次 `install()` 装配出的句柄。
+ *
+ * `install()` 的既有签名返回 `dataDir`（绝大多数用例只用它），**刻意不改签名**以免
+ * 牵动既有断言；需要驱动 `checkNow()` 的用例从这里取句柄。
+ */
+let lastHandle: import('../src/main/updater.js').UpdaterHandle | undefined
+
+/**
  * 用一组回调装配更新器，返回它使用的状态目录。
  *
  * @param mod - {@link freshModule} 拿到的模块实例。
@@ -113,7 +121,7 @@ async function install(
   }> = {},
 ): Promise<string> {
   const dataDir = await mkdtemp(join(tmpdir(), 'dsh-updater-'))
-  mod.installUpdater({
+  lastHandle = mod.installUpdater({
     isPackaged: true,
     dataDir,
     promptRestart: async () => false,
@@ -488,5 +496,62 @@ describe('更新器接线', () => {
 
       expect(textAtInstall).toContain('立即重启')
     })
+  })
+})
+
+/**
+ * `checkNow()` 的返回值。
+ *
+ * 这组用例补的是一个**曾经漏掉的接线**：`checkNow` 只返回结局字符串，版本号由调用方
+ * （`index.ts` 的 IPC handler）用 `app.getVersion()` 填 —— 那是**当前版本**，于是界面
+ * 把「发现新版本 0.2.2」显示成了「发现新版本 0.2.1」（用户实测报告）。
+ *
+ * 教训（值得留在测试里）：返回值里凡是**界面要显示**的字段，都该由**知道它的一方**
+ * 提供，并且在这一层被钉住 —— 让调用方去"补"一个它并不掌握的字段，补错是迟早的事。
+ */
+describe('checkNow：把「新版本号」交给界面', () => {
+  beforeEach(() => {
+    lastHandle = undefined
+    fake.checkForUpdates = async () => ({})
+  })
+
+  it('发现新版本时返回的是新版本号，不是当前版本', async () => {
+    fake.checkForUpdates = async () => ({
+      isUpdateAvailable: true,
+      updateInfo: { version: '0.2.2' },
+    })
+    const mod = await freshModule()
+    await install(mod)
+    const result = await lastHandle!.checkNow()
+    expect(result).toEqual({ outcome: 'available', version: '0.2.2' })
+  })
+
+  it('已是最新时 outcome=up-to-date 且不带版本号', async () => {
+    fake.checkForUpdates = async () => ({
+      isUpdateAvailable: false,
+      updateInfo: { version: '' },
+    })
+    const mod = await freshModule()
+    await install(mod)
+    const result = await lastHandle!.checkNow()
+    expect(result).toEqual({ outcome: 'up-to-date', version: '' })
+  })
+
+  it('检查抛错时 outcome=error 且不带版本号', async () => {
+    fake.checkForUpdates = async () => {
+      throw new Error('网络不通')
+    }
+    const mod = await freshModule()
+    await install(mod)
+    const result = await lastHandle!.checkNow()
+    expect(result).toEqual({ outcome: 'error', version: '' })
+  })
+
+  it('库没给出新版本号时不编造：version 留空（界面会显示「未知」）', async () => {
+    fake.checkForUpdates = async () => ({ isUpdateAvailable: true })
+    const mod = await freshModule()
+    await install(mod)
+    const result = await lastHandle!.checkNow()
+    expect(result).toEqual({ outcome: 'available', version: '' })
   })
 })

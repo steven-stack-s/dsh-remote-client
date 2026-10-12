@@ -229,6 +229,32 @@ let installed = false
 const prompting = new Set<string>()
 
 /**
+ * 一次检查的结局 + **界面上要显示的那个版本号**。
+ *
+ * ## 为什么把版本号一起返回，而不是让调用方自己取
+ *
+ * 界面文案是「发现新版本 X，正在后台下载」—— X 必须是**新版本号**，而它只有这一层
+ * 知道（来自库的 `updateInfo.version`）。此前 `checkNow` 只返回结局字符串，版本号由
+ * 调用方（`index.ts` 的 IPC handler）用 `app.getVersion()` 补上 —— 那是**当前版本**，
+ * 于是界面把「发现新版本 0.2.2」显示成「发现新版本 0.2.1」（用户实测报告）。
+ *
+ * 教训：返回值里凡是**界面要显示**的字段，都该由**知道它的一方**提供。让调用方去补一个
+ * 它并不掌握的字段，补错是迟早的事 —— 这条比"少传一个参数"重要得多，故留在这里。
+ */
+export interface UpdateCheckResult {
+  /** 这次检查的结局。 */
+  readonly outcome: UpdateCheckOutcome
+  /**
+   * 相关版本号。
+   *
+   * `outcome === 'available'` 时是**新版本号**；其余结局（已最新 / 失败）为空串 ——
+   * 那些结局的界面文案本来就不含版本号，给空串比给一个会被误读的值安全。
+   * 库未提供版本号时同样留空，界面会显示「未知」，**不编造**。
+   */
+  readonly version: string
+}
+
+/**
  * 更新器的对外句柄，供设置界面的「立即检查更新」按钮使用。
  *
  * 之所以要返回句柄：`installUpdater` 此前是纯装配函数（返回 void），而设置里
@@ -241,9 +267,9 @@ export interface UpdaterHandle {
    *
    * **绝不抛**（与装配期的约定一致）：失败归类成 `'error'` 返回，由界面显示。
    *
-   * @returns 这次检查的结局。
+   * @returns 这次检查的结局与相关版本号。
    */
-  checkNow: () => Promise<UpdateCheckOutcome>
+  checkNow: () => Promise<UpdateCheckResult>
 }
 
 /**
@@ -386,12 +412,12 @@ export function installUpdater(deps: UpdaterDeps): UpdaterHandle | undefined {
  * 为 false），因此只有异常才需要记日志。**失败不再重试排程**：6 小时的周期
  * 检查本身就是重试。
  *
- * 返回结局供设置界面显示——但**只在这一处判断**：定时检查调用它时会丢弃返回值
- * （没人看），手动检查会把它交给界面。
+ * 返回结局**与相关版本号**供设置界面显示——但**只在这一处判断**：定时检查调用它时
+ * 会丢弃返回值（没人看），手动检查会把它交给界面。
  *
- * @returns 这次检查的结局。
+ * @returns 这次检查的结局与相关版本号。
  */
-async function checkNow(): Promise<UpdateCheckOutcome> {
+async function checkNow(): Promise<UpdateCheckResult> {
   try {
     logStep(`开始检查更新（当前版本 ${currentVersionText()}）`)
     const result = await autoUpdater.checkForUpdates()
@@ -399,19 +425,31 @@ async function checkNow(): Promise<UpdateCheckOutcome> {
     //
     // 缺这一行时，日志里只有「开始检查更新」而没有任何后续，读者无法区分
     // 「检查成功、只是没有新版」与「进程在检查中途没了」——这正是本日志要消除的
-    // 那类歧义。另外两种结局各有自己的行：有新版本走 update-available，
-    // 失败走下面的 catch。
+    // 那类歧义。另外两种结局各有自己的行：有新版本走下面那行，失败走 catch。
     if (result?.isUpdateAvailable === false) {
       logStep('检查完成：当前已是最新版本')
-      return 'up-to-date'
+      // 「已是最新」的界面文案不含版本号，故留空 —— 给当前版本号只会制造
+      // 「已是最新版本 0.2.1」这种读起来像有新版的句子。
+      return { outcome: 'up-to-date', version: '' }
     }
     // 有新版本：`update-available` 的 handler 已经接手去下载了。
     // 这里不需要区分「发现新版」与「正在下载」——那是界面自己按最后一次结局
     // 与后续事件推断的，检查函数只知道「不是最新、也不是失败」。
-    return 'available'
+    //
+    // 版本号取自 `updateInfo.version`，**不是** `app.getVersion()`：后者是当前
+    // 运行的版本，用它就是本次修掉的那个 bug（界面把当前版本当新版本显示）。
+    const version = result?.updateInfo?.version ?? ''
+    if (version === '') {
+      // 库没给版本号：如实记一笔并留空。界面会显示「未知」——编造一个版本号
+      // 比显示「未知」糟得多（用户会照着它去找一个不存在的安装包）。
+      logStep('检查完成：发现新版本（库未提供版本号）')
+    } else {
+      logStep(`检查完成：发现新版本 ${version}`)
+    }
+    return { outcome: 'available', version }
   } catch (error) {
     logError('检查更新失败（已忽略，不影响使用）：', error)
-    return 'error'
+    return { outcome: 'error', version: '' }
   }
 }
 
@@ -422,7 +460,7 @@ async function checkNow(): Promise<UpdateCheckOutcome> {
  * 句柄（见那里的说明）。它指向的始终是同一个 `checkNow`，因此不需要在每次装配
  * 时重新赋值——但保留赋值语句可以让「谁提供它」一目了然。
  */
-let currentCheckNow: () => Promise<UpdateCheckOutcome> = checkNow
+let currentCheckNow: () => Promise<UpdateCheckResult> = checkNow
 
 /**
  * 更新已下载完成 → 询问用户是否立即重启安装。

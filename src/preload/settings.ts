@@ -45,7 +45,12 @@ contextBridge.exposeInMainWorld('shell', {
   /**
    * 立即检查一次更新。
    *
-   * @returns 这次检查的结局与当前版本号（供界面拼文案）。
+   * @returns 这次检查的结局与**相关版本号**。
+   *
+   * `version` 的语义：`outcome === 'available'` 时是**新版本号**（界面文案
+   * 「发现新版本 X」里的 X）；`up-to-date` / `error` 时为空串；`disabled` 时是当前版本。
+   * 该值由主进程的更新时间器提供 —— 界面**不要**拿别处的版本号替换它
+   * （曾经被当前版本顶替，导致界面显示错版本）。
    */
   checkUpdate: () =>
     ipcRenderer.invoke('shell:settings:checkUpdate') as Promise<{
