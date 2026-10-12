@@ -62,8 +62,10 @@ Tray → "Client settings", menu bar → "Edit(E) → Settings…", or `Ctrl+,`.
 | Quiet period for message notifications | 15s (range 15–300) | After a reply stops streaming, wait this long with no new output before notifying. Too short and "waiting on a slow tool" is mistaken for "finished". **Approval notifications ignore it** and always fire immediately |
 | On startup | Open the last host | Can be changed to always show the "Add host" page |
 | Hide to tray instead of quitting | on | When off, closing the window quits (on macOS this has no effect — that platform already keeps running when the last window closes) |
-| Open cross-host jumps in a new window | off | Clicking another dsh host on a portal opens a new window instead of replacing the current one. **In-site navigation is unaffected** — opening a session stays in the current window |
+| Open cross-host jumps in a new window | off | Switching hosts from the **tray / menu host list**, or clicking another dsh host on a portal: opens a new window instead of replacing the current one. **In-site navigation is unaffected** — opening a session stays in the current window |
 | Check for updates after startup | on | When off, the updater is not wired up at all |
+
+The update section also shows the **current version** and offers a "Check for updates now" button (in development the updater is not wired up, so the button is disabled with an explanation).
 
 Changes take effect **immediately** (host behaviour reads the current value rather than a startup snapshot), with no restart. Settings live in `%APPDATA%\dsh-remote-client\settings.json`; a corrupt file is first backed up as `settings.json.corrupt-<timestamp>` before falling back to defaults — it is never silently discarded.
 
