@@ -3,6 +3,7 @@ import {
   focusTargetFor,
   hostOpenEffect,
   isKnownHostWebContents,
+  shouldOpenNewHostWindow,
 } from '../src/main/window-registry.js'
 
 /**
@@ -113,5 +114,43 @@ describe('hostOpenEffect（#2：托盘切换主机时开新窗口还是替换当
         openInNewWindow,
       })).toBe('keep-open')
     }
+  })
+})
+
+/**
+ * 打开一台主机时，要不要**新开**一个窗口（而不是复用已有那个）。
+ *
+ * ## 这条来自门户场景的真机反馈
+ *
+ * 窗口承载主机 A，但页面一进去就被门户（绿联 UGOS）**302 到门户自己的域**并停住
+ * ——登录后不回跳。此时「A 已有窗口」这个事实**不再成立**：那个窗口显示的是门户，
+ * 不是 A。用户点门户里的 A 图标（设置里「跨主机跳转时开新窗口」为**开**）期望
+ * 新开一个窗口进 A，而旧实现因为 Map 里还记着那个窗口，只把它 `show()` 唤起——
+ * 窗口纹丝不动（这正是「点了没反应」的成因）。
+ *
+ * 判据是「那个窗口**现在还代不代表**这台主机」，而不是「Map 里登记过没有」。
+ */
+describe('shouldOpenNewHostWindow（门户把页面带走后，旧窗口该让位）', () => {
+  it('目标主机还没有窗口 → 需要新开', () => {
+    expect(shouldOpenNewHostWindow({
+      targetWindowExists: false,
+      existingWindowOnHostOrigin: false,
+    })).toBe(true)
+  })
+
+  it('已有窗口且页面仍在该主机上 → 复用（唤起它，不新建）', () => {
+    // 「同一 host 至多一个窗口」是硬不变量：同一个 origin 并存两份 WebSocket
+    // 既浪费又会让页面状态互相打架。
+    expect(shouldOpenNewHostWindow({
+      targetWindowExists: true,
+      existingWindowOnHostOrigin: true,
+    })).toBe(false)
+  })
+
+  it('已有窗口但页面已被门户带走 → 新开（那个窗口不再代表这台主机）', () => {
+    expect(shouldOpenNewHostWindow({
+      targetWindowExists: true,
+      existingWindowOnHostOrigin: false,
+    })).toBe(true)
   })
 })

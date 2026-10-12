@@ -14,6 +14,7 @@ import {
   focusTargetFor,
   hostOpenEffect,
   isKnownHostWebContents,
+  shouldOpenNewHostWindow,
   type OpenHostWindowRef,
 } from './window-registry.js'
 import { hostIdFromOrigin } from './partitions.js'
@@ -477,21 +478,36 @@ function openHostFromMenu(host: HostEntry): void {
  * @param host - 目标主机。**必须是当前配置里的那份**（调用方从 `hostsData` 取），
  *   因为这里会把它交给窗口作为最新配置。
  */
-function openHost(host: HostEntry): void {
+function openHost(host: HostEntry, options: { wantsNewWindow?: boolean } = {}): void {
   // 该 host 已开 → 只更新配置并唤起，**绝不再建第二个窗口**。
   //
   // 这条不变量（同一 host 至多一个窗口）是必须的：同一个 origin 并存两个窗口
   // 会有两份 WebSocket 连到同一台 dsh，既浪费又会让页面状态互相打架——这正是
   // 原实现「切换主机时销毁旧窗口」想避免的事，多窗口化之后由它来保证。
+  //
+  // ⚠️ 但「已开」的前提是那个窗口**现在还代不代表**这台主机：门户（绿联 UGOS
+  // 那类）会把页面 302 到它自己的域并停住、登录后不回跳，此时窗口显示的已经是
+  // 门户。若照样 `show()` 唤起，用户点了图标却什么都没发生（真机反馈）。
   const existing = hostWindows.get(host.id)
   if (existing !== undefined && !existing.win.isDestroyed()) {
-    // 窗口已存在时也要把最新配置交进去：它可能停在旧 token / 旧显示名上
-    // （窗口持有的是创建时那份快照，见 windows.ts 的 updateHost 说明）。
-    existing.updateHost(host)
-    lastFocusedHostId = host.id
-    existing.show()
-    refreshChrome()
-    return
+    const openNew =
+      options.wantsNewWindow === true &&
+      shouldOpenNewHostWindow({
+        targetWindowExists: true,
+        existingWindowOnHostOrigin: existing.isOnHostOrigin(),
+      })
+    if (!openNew) {
+      // 窗口已存在时也要把最新配置交进去：它可能停在旧 token / 旧显示名上
+      // （窗口持有的是创建时那份快照，见 windows.ts 的 updateHost 说明）。
+      existing.updateHost(host)
+      lastFocusedHostId = host.id
+      existing.show()
+      refreshChrome()
+      return
+    }
+    // 让位：那个窗口的页面已被门户带走，不再代表这台主机。把它从注册表摘掉，
+    // 由下面的新建流程接管该 host 的登记位——不变量（至多一个窗口）依然成立。
+    hostWindows.delete(host.id)
   }
 
   lastFocusedHostId = host.id
@@ -576,7 +592,12 @@ function openHostByUrl(url: string): void {
   // 复用 `openHost` 而不是自己建窗口：这样自动命中「同一 host 至多一个窗口」
   // 这条不变量——那台主机若已经开着，这里只会把它唤到前台，而不是并存两个窗口
   // （两份 WebSocket 连同一台 dsh）。这也正是本路径不用 Electron `allow` 的原因。
-  openHost(host)
+  //
+  // `wantsNewWindow: true` 表达的是**这条路径的语义**（用户开了「跨主机跳转时开
+  // 新窗口」）：若该主机的窗口已被门户带走（页面不在它的 origin 上），就让位、
+  // 真开一个新窗口，而不是去唤起一个显示门户的窗口。开关**关**时根本走不到这里
+  // （判定层给的是 `navigate-self`），所以这个 true 不会越权。
+  openHost(host, { wantsNewWindow: true })
 }
 
 /**

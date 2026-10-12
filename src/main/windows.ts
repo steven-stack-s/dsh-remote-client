@@ -206,16 +206,7 @@ function installContentWindowBehavior(
   )
 
   // 递归接管：孙窗口同样共享 partition 与 preload、同样不接管菜单栏。
-  installWindowOpenPolicy(
-    child.webContents,
-    getKnownHostOrigins,
-    // 子窗口不读「跨主机开新窗口」设置（它判断不了用户此刻的意图），沿用默认值。
-    undefined,
-    undefined,
-    // 但它承载的仍是**同一台主机**——门户登录后不回跳在这类弹窗里同样会发生，
-    // 因此「窗口所属主机」必须照样交下去。
-    () => getHost().origin,
-  )
+  installWindowOpenPolicy(child.webContents, getKnownHostOrigins)
   child.webContents.on('did-create-window', grandchild => {
     installContentWindowBehavior(grandchild, getHost, getKnownHostOrigins)
   })
@@ -272,7 +263,6 @@ function installWindowOpenPolicy(
   getKnownHostOrigins: () => readonly string[],
   getOpenInNewWindow: () => boolean = () => false,
   onOpenNewWindow: ((url: string) => void) | undefined = undefined,
-  getWindowHostOrigin: (() => string) | undefined = undefined,
 ): void {
   contents.setWindowOpenHandler(({ url }) => {
     const decision = windowOpenDecision({
@@ -282,12 +272,6 @@ function installWindowOpenPolicy(
       currentOrigin: currentOriginOf(contents),
       knownHostOrigins: getKnownHostOrigins(),
       openInNewWindow: getOpenInNewWindow(),
-      // 但「页面现在停在哪」不能单独当判据：门户登录后不回跳时，窗口名义上仍是
-      // 主机 A 的、页面却停在门户域——此时点门户里的 A 图标会被误判成「跨主机」。
-      // 所以再把**窗口所属主机**一并交进去（两条判据互补，缺一不可）。
-      ...(getWindowHostOrigin === undefined
-        ? {}
-        : { windowHostOrigin: getWindowHostOrigin() }),
     })
 
     if (decision === 'navigate-self') {
@@ -370,6 +354,16 @@ export interface HostWindowHandle {
   updateHost: (next: HostEntry) => void
   /** 显示并聚焦窗口（供托盘「打开」在窗口被隐藏时唤起）。 */
   show: () => void
+  /**
+   * 窗口的页面**现在是否还停在这台主机的 origin 上**。
+   *
+   * 门户（绿联 UGOS 那类）会把页面 302 到它自己的域并停住、登录后不回跳。此时
+   * 窗口虽然仍以这台主机的 id 登记着，实际显示的已经不是这台主机了。`openHost()`
+   * 据此决定「复用这个窗口」还是「让它让位、另开一个」（见 `shouldOpenNewHostWindow`）。
+   *
+   * **刻意不是**「Map 里登记过没有」：登记只说明它**曾经**是这台主机的窗口。
+   */
+  isOnHostOrigin: () => boolean
 }
 
 /**
@@ -567,9 +561,6 @@ export function createHostWindow(
     getKnownHostOrigins,
     getOpenInNewWindow,
     onOpenNewWindow,
-    // 「本窗口属于哪台主机」——读**可变**的 `host`（不是初始快照）：改地址后
-    // 窗口会以新 origin 重建，这里必须跟着走，否则判据会停在旧地址上。
-    () => host.origin,
   )
 
   // 仍然不可达（`deny` 从不触发它），但**理由变了**：task-19 的「开新窗口」也走
@@ -806,6 +797,21 @@ export function createHostWindow(
       if (win.isDestroyed()) return
       win.show()
       win.focus()
+    },
+    isOnHostOrigin: () => {
+      if (win.isDestroyed()) return false
+      const origin = currentOriginOf(win.webContents)
+      // 空串（还没提交导航）、`null`（`about:blank`）、以及非 http(s) 的页面
+      // （我们自己的离线页）都算「仍代表这台主机」：那些是窗口自身的状态，
+      // 不是被门户带走了。**只有落在别的 http(s) origin 才算被带走**——
+      // 那正是门户 302 之后的形态（`app-….ugdocker.link` → `….ug.link`）。
+      if (origin === '' || origin === 'null' || !/^https?:/i.test(origin)) return true
+      try {
+        // 两边都规范化成 origin 再比：大小写、默认端口、结尾斜杠都不该算不同。
+        return origin === new URL(host.origin).origin
+      } catch {
+        return false
+      }
     },
   }
 }

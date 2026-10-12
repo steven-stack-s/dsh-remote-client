@@ -611,22 +611,23 @@ function comparableOrigin(value: string): string | undefined {
  * 3. 目标 origin === `currentOrigin` → **`navigate-self`**：站点内部跳转。这一条
  *    **先于**「跨主机」判定，因为站内链接无论开关如何都不该开新窗口——否则在 dsh
  *    里点任何一个会话都会弹出一个新窗口；
- * 4. 目标 origin === `windowHostOrigin`（**本窗口所属的主机**）→ **`navigate-self`**。
- *    同样先于跨主机判定：窗口本来就是给这台主机用的，就该在它里面导航。门户登录后
- *    **不回跳**时，第 3 条会失效（页面停在门户域上），全靠这一条兜住；
- * 5. 目标 origin ∈ `knownHostOrigins` → 这是**跨主机跳转**（从 A 主机跳到 B 主机）：
+ * 4. 目标 origin ∈ `knownHostOrigins` → 这是**跨主机跳转**（门户里的 dsh 图标、
+ *    或从 A 主机跳到 B 主机）：
  *    - 开关**关** → `navigate-self`（task-18 的既有行为：替换当前窗口）；
  *    - 开关**开** → `open-new-window`（task-19：多主机并行）；
- * 6. 其余 → `external`：真正的外链（GitHub 等）交给默认浏览器。
+ * 5. 其余 → `external`：真正的外链（GitHub 等）交给默认浏览器。
  *
- * **为什么第 3、4 条必须排在第 5 条前面**：一台主机的 origin 同时满足「∈ 已配置
- * 主机」和「=== currentOrigin」（它当然在配置里，而用户正在用它）。若先判第 5 条，
+ * **为什么第 3 条必须排在第 4 条前面**：一台主机的 origin 同时满足「∈ 已配置
+ * 主机」和「=== currentOrigin」（它当然在配置里，而用户正在用它）。若先判第 4 条，
  * 站内链接会被判成「跨主机」并开新窗口——这正是「每个会话都弹一个窗口」的成因。
- * 门户场景同理：那台主机的窗口已经开着，再判成「跨主机」只会把它自己唤起一遍。
+ *
+ * **门户场景（页面被 302 带走）也在第 4 条**，但**不能靠在判定层加例外来解决**：
+ * 那样会把开关架空（开与关都变成替换当前窗口）。正确解法在 `openHost()` —— 它
+ * 发现「该主机的窗口已被门户带走」时让位给新窗口，见 `shouldOpenNewHostWindow`。
  *
  * `currentOrigin` 传空串表示**取不到当前页面 origin**（还没提交任何导航、或者当前
  * 是壳自有的 `file://` 页面如离线页）。此时第 3 条不参与判定——不能因为「取不到」
- * 就把所有链接都当成站内链接。`windowHostOrigin` 的省略/空串同理。
+ * 就把所有链接都当成站内链接。
  *
  * @param input - 判定输入。
  * @returns `'navigate-self'` 在当前窗口导航，`'open-new-window'` 另开一个主机窗口，
@@ -648,14 +649,6 @@ export function windowOpenDecision(input: {
    * 宁可替换当前窗口，也不要开出一堆窗口。
    */
   openInNewWindow?: boolean
-  /**
-   * **本窗口承载的那台主机**的 origin；壳自有窗口或取不到时省略。
-   *
-   * 与 `currentOrigin` 的区别是这条判定的全部要点：`currentOrigin` 是「页面**现在**
-   * 停在哪」，本字段是「这个窗口**名义上**属于谁」。门户场景下两者会分叉（页面被
-   * 302 到门户域并停住），而**链接该不该在本窗口打开，取决于后者**。
-   */
-  windowHostOrigin?: string
 }): WindowOpenDecision {
   const parsed = safeUrl(input.url)
   if (parsed === undefined) return 'external'
@@ -669,25 +662,12 @@ export function windowOpenDecision(input: {
   const current = input.currentOrigin === '' ? undefined : comparableOrigin(input.currentOrigin)
   if (current !== undefined && current === target) return 'navigate-self'
 
-  // 第 3.5 条：指向**本窗口所属主机**时同样替换当前窗口。也必须先于跨主机判定。
+  // 第 4 条：跨主机跳转（含「窗口承载的那台主机，但页面已被门户带走」）。
   //
-  // 为什么单列这一条：门户（绿联 UGOS 那类）登录后**不回跳**，窗口承载的是主机 A，
-  // 页面却停在门户域上。此时点门户里的 A 图标，`currentOrigin`（门户域）≠ A，
-  // 于是落到第 4 条被判成「跨主机跳转」——开关开着就开新窗口，而 `openHost()` 发现
-  // A 已有窗口（就是当前这个）只会 `show()` 唤起、**不导航**，窗口纹丝不动；
-  // 同时我们 `deny` 了 `window.open`，门户那边拿不到窗口还会报错。
-  // 开关关时反而正常（`navigate-self` 真的会把窗口导航走）——这正是旧版本
-  // （还没有这个开关、恒定走 `navigate-self`）一直好用的原因。
-  //
-  // 空串按「没提供」处理，与 `currentOrigin` 的约定一致：壳自有的 `file://` 页面
-  // 取不到 origin 时，不能因此把链接判成「本窗口的主机」。
-  const windowHost =
-    input.windowHostOrigin === undefined || input.windowHostOrigin === ''
-      ? undefined
-      : comparableOrigin(input.windowHostOrigin)
-  if (windowHost !== undefined && windowHost === target) return 'navigate-self'
-
-  // 第 4 条：跨主机跳转。
+  // 这里**刻意不额外判「目标是不是本窗口所属的主机」**：曾经加过那样一条，
+  // 结果是开关被架空——用户明确要求「开关对门户里点 dsh 图标同样生效」
+  // （开=新窗口 / 关=当前窗口）。门户场景的正确解法在**下游**：`openHost()` 发现
+  // 「已有窗口的页面已被带走」时让位给新窗口，见 `shouldOpenNewHostWindow`。
   for (const origin of input.knownHostOrigins) {
     if (comparableOrigin(origin) === target) {
       return input.openInNewWindow === true ? 'open-new-window' : 'navigate-self'

@@ -162,3 +162,34 @@ export function hostOpenEffect(input: {
   if (input.currentHostId === undefined) return 'keep-open'
   return input.openInNewWindow ? 'keep-open' : 'replace'
 }
+
+/**
+ * 打开一台主机时要不要**新开**一个窗口（false = 复用已有那个）。
+ *
+ * ## 为什么不能只看「Map 里登记过没有」
+ *
+ * 窗口承载主机 A，但页面可能已经被**门户**（绿联 UGOS 那类）302 到它自己的域并
+ * 停在那里——登录后不回跳。那个窗口此后显示的是门户，**不再代表 A**；可它仍然
+ * 以 A 的 id 登记在注册表里。若只按「登记过」判定复用，就会去 `show()` 一个显示
+ * 门户的窗口——用户点了图标却什么都没发生（真机反馈的正是这个）。
+ *
+ * 因此判据是「那个窗口**现在还代不代表**这台主机」：
+ * - 没有窗口 → 新开；
+ * - 有窗口且页面仍在该主机 origin 上 → 复用（唤起）；
+ * - 有窗口但页面已被带走 → **新开**，并让旧窗口让位（不再占用该 host 的登记位）。
+ *
+ * 「同一 host 至多一个窗口」这条不变量仍然成立——让位之后，旧窗口不再是该主机的
+ * 窗口，新的那个才是。
+ *
+ * @param input - 判定输入。
+ * @returns 需要新开窗口时返回 true。
+ */
+export function shouldOpenNewHostWindow(input: {
+  /** 注册表里是否已有该主机的窗口。 */
+  targetWindowExists: boolean
+  /** 那个窗口的页面是否仍停在该主机的 origin 上。 */
+  existingWindowOnHostOrigin: boolean
+}): boolean {
+  if (!input.targetWindowExists) return true
+  return !input.existingWindowOnHostOrigin
+}
