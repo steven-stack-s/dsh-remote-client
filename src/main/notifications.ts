@@ -79,10 +79,21 @@ export interface QuietGate {
 export function createQuietGate(deps: {
   /** 延时调度端口。 */
   schedule: QuietTimerPort['schedule']
-  /** 静默时长，默认 {@link QUIET_PERIOD_MS}。 */
-  quietMs?: number
+  /**
+   * 静默时长（毫秒），默认 {@link QUIET_PERIOD_MS}。
+   *
+   * **可以是取值函数**：自 task-19 起静默期成为用户可改的设置，而闸门是在
+   * 模块加载时创建一次、长期存活的单例——传固定数字会让「改了设置却不生效」，
+   * 直到重启客户端才偶然生效。传函数则**每次 `pulse` 现取**，改完立刻起作用。
+   *
+   * 数字形式保留给既有调用方与测试（它们只关心一段固定的时长）。
+   */
+  quietMs?: number | (() => number)
 }): QuietGate {
-  const quietMs = deps.quietMs ?? QUIET_PERIOD_MS
+  const resolveQuietMs = (): number => {
+    const value = typeof deps.quietMs === 'function' ? deps.quietMs() : deps.quietMs
+    return value ?? QUIET_PERIOD_MS
+  }
   /** 当前待触发任务的取消函数；无待触发任务时为 undefined。 */
   let cancelPending: (() => void) | undefined
   /**
@@ -110,7 +121,7 @@ export function createQuietGate(deps: {
         // 回调跑了，句柄即失效。不置空的话下一轮 `pulse` 会误以为还有待触发任务。
         cancelPending = undefined
         onFire()
-      }, quietMs)
+      }, resolveQuietMs())
     },
     cancel,
   }

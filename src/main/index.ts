@@ -347,6 +347,8 @@ function openHost(host: HostEntry): void {
     },
     () => { refreshChrome() },
     () => quitting,
+    // 关窗行为取**当前**设置（现取），因此用户在设置里改完立刻对已开的窗口生效。
+    () => settingsData.hideOnClose,
   )
   currentWindow.win.on('closed', () => { currentWindow = undefined })
 }
@@ -648,10 +650,17 @@ async function boot(): Promise<void> {
     // `quitting`，漏掉就会让「立即重启」被关窗拦截吞掉（详见
     // `markQuittingForUpdate` 的说明）。`UpdaterDeps` 把它声明成必填字段，
     // 因此这里少传一个会直接编译失败，而不是等到真机才发现。
-    installUpdater(updaterDeps({
-      promptRestart,
-      beforeInstall: markQuittingForUpdate,
-    }))
+    // 用户在设置里关掉了「检查更新」→ 整个更新器都不装配。
+    //
+    // 放在 `finally` 里的这一步**依然不受上面 try 的成败影响**，因此「启动就
+    // 出问题的用户最需要能升到修复版」这条既有考虑仍然成立——除非用户自己
+    // 显式关掉了它，那是他的选择。
+    if (settingsData.updateCheckEnabled) {
+      installUpdater(updaterDeps({
+        promptRestart,
+        beforeInstall: markQuittingForUpdate,
+      }))
+    }
   }
 }
 
@@ -717,10 +726,20 @@ const quietGate = createQuietGate({
     const timer = setTimeout(callback, delayMs)
     return () => { clearTimeout(timer) }
   },
+  // **传取值函数而非当前的数字**：静默期是用户可改的设置，而这个闸门是模块级
+  // 单例、随进程存活。传数字会让「在设置里改完静默期却不生效」，直到重启客户端
+  // 才偶然对上——典型的「存下来了却没人读」。
+  quietMs: () => settingsData.notifyQuietMs,
 })
 
 ipcMain.on('shell:notify', (event, raw: unknown) => {
   if (event.sender.id !== hostWebContentsId()) return
+  // 用户在设置里关掉了通知 → 直接丢弃上报。
+  //
+  // 刻意在**最前面**判掉（而不是在 notifier 内部抑制）：关掉通知意味着这个功能
+  // 整体不工作，连静默期计时器都不该起——否则用户以为关干净了，后台仍有定时器
+  // 在空转并在 15 秒后走一遍组装上下文的逻辑。
+  if (!settingsData.notifyEnabled) return
   const request = parseNotifyRequest(raw)
   if (request === undefined) return
 

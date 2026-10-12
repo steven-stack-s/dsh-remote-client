@@ -446,4 +446,21 @@ describe('createQuietGate', () => {
 
     expect(timer.delays).toEqual([30_000])
   })
+
+  it('静默时长可以传取值函数，且每次 pulse 现取（改设置后立刻生效）', () => {
+    // task-19：静默期成为用户可改的设置，而闸门是长期存活的单例。
+    // 若在创建时把时长定死，用户改完设置要重启客户端才生效——
+    // 这正是「设置存下来了却没人读」那类假完成的典型形态。
+    const timer = fakeTimers()
+    let current = 20_000
+    const gate = createQuietGate({ schedule: timer.schedule, quietMs: () => current })
+
+    gate.pulse(() => undefined)
+    expect(timer.delays).toEqual([20_000])
+
+    // 模拟用户在设置窗口把静默期改长。
+    current = 60_000
+    gate.pulse(() => undefined)
+    expect(timer.delays).toEqual([20_000, 60_000])
+  })
 })

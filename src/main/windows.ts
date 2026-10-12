@@ -358,6 +358,9 @@ function titlebarOverlayOptions(): TitlebarOverlayOptions {
  * @param onTitle - 页面标题变化回调，供窗口标题与托盘显示当前会话。
  * @param onOfflineChange - 离线状态变化回调，供托盘更新提示。
  * @param isQuitting - 应用是否正在真正退出；退出时放行 close，其余情况隐藏。
+ * @param getHideOnClose - 取「关窗是否收进托盘」这一用户设置的函数。**传函数而非
+ *   布尔值**：窗口是长期存活的，而用户随时可能去设置窗口改掉它；传快照会让改完
+ *   之后已开的窗口仍旧按旧设置行事，看起来就像设置没生效。
  * @returns 窗口句柄，调用方据此控制重试与查询状态。
  */
 export function createHostWindow(
@@ -366,6 +369,7 @@ export function createHostWindow(
   onTitle: (title: string) => void,
   onOfflineChange: (offline: boolean) => void = () => undefined,
   isQuitting: () => boolean = () => false,
+  getHideOnClose: () => boolean = () => true,
 ): HostWindowHandle {
   // 主机配置是**可变状态**，不是闭包里的快照。下面所有 `host.*` 读取的都是
   // 这个变量，因此 `updateHost()` 之后立即生效。
@@ -442,8 +446,17 @@ export function createHostWindow(
   // Windows/Linux 上拦截关窗并改为隐藏，使托盘与其管理入口继续存活——
   // 用户在能力选择里勾的「关窗后仍能被唤起」依赖这一点。应用真正退出时
   // 放行，避免卡住退出流程；darwin 保持既有语义（见 lifecycle.ts）。
+  //
+  // `shouldHideOnClose` 由主进程注入（取值的函数，不是快照）：用户在设置窗口
+  // 关掉「关窗收进托盘」后，已开着的窗口必须**立刻**按新设置行事，而不是等下次
+  // 重启（窗口是长期存活的，快照会让设置看起来没生效）。
   win.on('close', event => {
-    if (!shouldHideOnClose({ kind: 'host', platform: process.platform, quitting: isQuitting() })) return
+    if (!shouldHideOnClose({
+      kind: 'host',
+      platform: process.platform,
+      quitting: isQuitting(),
+      hideOnClose: getHideOnClose(),
+    })) return
     event.preventDefault()
     win.hide()
   })
