@@ -4,16 +4,16 @@
     <meta charset="utf-8" />
     <title>客户端设置</title>
     <style>
-      :root { color-scheme: dark; }
+      :root { color-scheme: light; }
       body {
         margin: 0; height: 100vh; display: grid; place-content: center;
-        background: #151517; color: #e6edf3;
+        background: #ffffff; color: #1f2328;
         font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
       }
       form { width: 480px; display: grid; gap: 4px; }
       h1 { font-size: 16px; margin: 0 0 4px; }
       h2 {
-        font-size: 13px; margin: 14px 0 6px; color: #8b949e;
+        font-size: 13px; margin: 14px 0 6px; color: #59636e;
         font-weight: 600; letter-spacing: 0.02em;
       }
       .row {
@@ -23,7 +23,7 @@
       .row input[type="checkbox"] { margin-top: 2px; }
       .row label { font-size: 14px; cursor: pointer; }
       .row .desc {
-        grid-column: 2; font-size: 12px; color: #8b949e;
+        grid-column: 2; font-size: 12px; color: #59636e;
         line-height: 1.6; margin: 0;
       }
       .field {
@@ -32,12 +32,12 @@
       }
       .field > label { font-size: 14px; }
       .field .desc {
-        grid-column: 1 / -1; font-size: 12px; color: #8b949e;
+        grid-column: 1 / -1; font-size: 12px; color: #59636e;
         line-height: 1.6; margin: 0;
       }
       input[type="number"], select {
         padding: 7px 10px; font-size: 14px; border-radius: 8px;
-        border: 1px solid #30363d; background: #0d1117; color: #e6edf3;
+        border: 1px solid #d1d9e0; background: #ffffff; color: #1f2328;
       }
       input[type="number"] { width: 90px; }
       select { width: 100%; }
@@ -46,13 +46,20 @@
         padding: 10px; font-size: 14px; border: 0; border-radius: 8px;
         background: #4c8bf5; color: #fff; cursor: pointer;
       }
-      button.secondary { background: #30363d; }
+      button.secondary {
+        background: #f6f8fa; color: #1f2328; border: 1px solid #d1d9e0;
+      }
       button:disabled { opacity: 0.5; cursor: default; }
-      p.err { color: #f85149; font-size: 13px; min-height: 18px; margin: 0; }
-      p.ok { color: #3fb950; font-size: 13px; min-height: 18px; margin: 0; }
-      p.hint { color: #8b949e; font-size: 12px; line-height: 1.7; margin: 0; }
+      p.err { color: #d1242f; font-size: 13px; min-height: 18px; margin: 0; }
+      p.ok { color: #1a7f37; font-size: 13px; min-height: 18px; margin: 0; }
+      p.hint { color: #59636e; font-size: 12px; line-height: 1.7; margin: 0; }
       .actions { display: flex; gap: 10px; margin-top: 10px; }
       .actions button { flex: 1; }
+      .version { font-size: 14px; font-variant-numeric: tabular-nums; }
+      button.inline {
+        padding: 6px 12px; font-size: 13px; width: auto; white-space: nowrap;
+      }
+      #updateStatus { min-height: 18px; }
     </style>
   </head>
   <body>
@@ -111,12 +118,23 @@
 
       <h2>更新</h2>
 
+      <div class="field">
+        <label>当前版本</label>
+        <span id="currentVersion" class="version">读取中…</span>
+      </div>
+
       <div class="row">
         <input type="checkbox" id="updateCheckEnabled" />
         <label for="updateCheckEnabled">启动后在后台检查新版本</label>
         <p class="desc">
           关闭后不再自动检查更新（也不会有「是否重启安装」的询问）。仅对安装版生效。
         </p>
+      </div>
+
+      <div class="field">
+        <label>手动检查</label>
+        <button type="button" class="secondary inline" id="checkUpdate">立即检查更新</button>
+        <p class="desc" id="updateStatus"></p>
       </div>
 
       <p class="err" id="err"></p>
@@ -139,6 +157,9 @@
       const hideOnClose = document.getElementById('hideOnClose')
       const updateCheckEnabled = document.getElementById('updateCheckEnabled')
       const openInNewWindow = document.getElementById('openInNewWindow')
+      const currentVersion = document.getElementById('currentVersion')
+      const checkUpdateBtn = document.getElementById('checkUpdate')
+      const updateStatus = document.getElementById('updateStatus')
 
       // 与 src/shared/settings.ts 的常量保持一致。这里重复一份是因为该模块
       // 用的是 ESM 导出，而本页是 file:// 下的普通 script（无打包器）——
@@ -197,9 +218,48 @@
 
       cancelBtn.addEventListener('click', () => { window.shell.close() })
 
-      // 初始化：读一次当前设置填进界面。
+      // ── 版本与手动检查（#3）──────────────────────────────────────────
+      //
+      // 文案由主进程的 `updateCheckMessage()` 生成（那里是纯函数、有单测），
+      // 本页只负责把结局翻成显示。**刻意在这里再实现一遍映射**：本页是
+      // file:// 下的普通 script，import 不了 ESM 模块；与其把主进程的文案
+      // 硬塞过来（那要新增一条 IPC 或内联整段逻辑），不如让结局枚举保持
+      // 单一真源、文案各写一份——文案错了只是不好看，不会影响行为。
+      const CHECK_MESSAGES = {
+        'up-to-date': () => '已是最新版本。',
+        'available': v => `发现新版本 ${v}，正在后台下载；下载完成后会询问是否重启。`,
+        'downloading': v => `新版本 ${v} 正在下载中，请稍候。`,
+        'error': () => '检查更新失败（网络不通或更新源异常）。稍后会再自动检查，不影响使用。',
+        'disabled': () => '当前未启用更新检查（开发模式下不检查；也可能是你把上面的开关关掉了）。',
+      }
+
+      checkUpdateBtn.addEventListener('click', async () => {
+        err.textContent = ''
+        saved.textContent = ''
+        checkUpdateBtn.disabled = true
+        updateStatus.textContent = '正在检查…'
+        try {
+          const result = await window.shell.checkUpdate()
+          const format = CHECK_MESSAGES[result.outcome] ?? CHECK_MESSAGES.error
+          updateStatus.textContent = format(result.version)
+        } catch (error) {
+          // IPC 本身失败（主进程异常）：如实说，不要静默停在「正在检查…」。
+          updateStatus.textContent = `检查更新失败：${String(error)}`
+        } finally {
+          checkUpdateBtn.disabled = false
+        }
+      })
+
+      // 初始化：读一次当前设置与版本填进界面。
       void (async () => {
         fill(await window.shell.load())
+        const info = await window.shell.version()
+        currentVersion.textContent = info.version === '' ? '未知' : info.version
+        // 更新器不可用时禁用按钮并说明原因——给一个点了没反应的按钮比不给更糟。
+        if (!info.updaterAvailable) {
+          checkUpdateBtn.disabled = true
+          updateStatus.textContent = CHECK_MESSAGES.disabled()
+        }
       })()
     </script>
   </body>

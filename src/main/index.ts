@@ -12,6 +12,7 @@ import {
 import {
   findHostWindowByWebContents,
   focusTargetFor,
+  hostOpenEffect,
   isKnownHostWebContents,
   type OpenHostWindowRef,
 } from './window-registry.js'
@@ -26,6 +27,7 @@ import { loadSettings, loadSettingsSync, saveSettings } from './settings-store.j
 import { DEFAULT_SETTINGS, normalizeSettings, type ClientSettings } from '../shared/settings.js'
 import {
   installUpdater,
+  type UpdaterHandle,
   updaterDeps,
   RESTART_DIALOG_CONFIRM_ID,
   RESTART_DIALOG_DEFAULT_ID,
@@ -266,6 +268,13 @@ const editWebContentsIds = new Set<number>()
 const settingsWebContentsIds = new Set<number>()
 
 /**
+ * 更新器句柄；未打包（开发模式）或用户关掉了检查时为 undefined。
+ *
+ * 设置窗口的「立即检查更新」用它；为 undefined 时界面如实显示「未启用」。
+ */
+let updaterHandle: UpdaterHandle | undefined
+
+/**
  * 打开「客户端设置」窗口。
  *
  * 只允许同时存在一个：这是**全局**设置的编辑界面（不是每台主机一份），重复打开
@@ -419,6 +428,47 @@ function hasHostWindow(): boolean {
  * 否则非 darwin 平台的关窗拦截会把退出流程卡死。
  */
 let quitting = false
+
+/**
+ * 用户**主动选择**一台主机时打开它（托盘的「主机列表」与菜单栏的「主机(H)」）。
+ *
+ * 与 {@link openHost} 的区别：那个是底层原语（「把这台主机的窗口弄出来并聚焦」），
+ * 本函数在此之上按**用户的 `openInNewWindow` 设置**决定要不要保留当前窗口。
+ *
+ * 为什么要单独一层：`openInNewWindow` 最初只接在「页面里跨主机跳转」上，而用户
+ * 实际用得最多的入口是托盘的主机列表——真机反馈「勾与不勾都是开新窗口」，正是
+ * 因为那条路径没读这个设置。判定逻辑抽在 `window-registry.ts` 的
+ * `hostOpenEffect()`（纯函数，有单测）。
+ *
+ * @param host - 目标主机。
+ */
+function openHostFromMenu(host: HostEntry): void {
+  const existing = hostWindows.get(host.id)
+  const effect = hostOpenEffect({
+    targetAlreadyOpen: existing !== undefined && !existing.win.isDestroyed(),
+    currentHostId: lastFocusedHostId,
+    openInNewWindow: settingsData.openInNewWindow,
+  })
+
+  if (effect === 'focus') {
+    // 已开着 → 唤起它。`openHost` 内部同样会走这条路（更新配置 + show）。
+    openHost(host)
+    return
+  }
+
+  if (effect === 'replace') {
+    // 关掉当前窗口再开目标——这是升级前的行为，也是设置关掉时的默认。
+    //
+    // 只关**当前那台**：多窗口下可能还开着别的（用户之前用新窗口选项开的），
+    // 那些不该被这次切换牵连。`destroy()` 不触发 close 事件，因此不会被
+    // 「隐藏到托盘」的拦截挡住。
+    const current = currentHostWindow()
+    if (current !== undefined && current !== existing) current.win.destroy()
+  }
+
+  // 'replace' 与 'keep-open' 都要开目标窗口（前者已先关掉当前那台）。
+  openHost(host)
+}
 
 /**
  * 打开一台主机。若该主机窗口已存在（可能被隐藏），直接唤起而不重建，
@@ -696,7 +746,7 @@ function installTray(): void {
       onQuit: () => { app.quit() },
       getData: () => hostsData,
       getCurrentId: () => getCurrentHostId(),
-      openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host) },
       onAddHost: () => { openWelcomeWindow() },
       onEditCurrentHost: () => { openEditCurrentHost() },
       onReload: () => { currentHostWindow()?.reload() },
@@ -721,7 +771,7 @@ function installAppMenuBar(): void {
     appMenu = installAppMenu({
       getData: () => hostsData,
       getCurrentId: () => getCurrentHostId(),
-      openHost: host => { void persist(touchHost(hostsData, host.id)); openHost(host) },
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host) },
       onAddHost: () => { openWelcomeWindow() },
       onReload: () => { currentHostWindow()?.reload() },
       isOffline: () => currentHostWindow()?.isOffline() ?? false,
@@ -833,7 +883,9 @@ async function boot(): Promise<void> {
     // 出问题的用户最需要能升到修复版」这条既有考虑仍然成立——除非用户自己
     // 显式关掉了它，那是他的选择。
     if (settingsData.updateCheckEnabled) {
-      installUpdater(updaterDeps({
+      // 持有句柄：设置窗口的「立即检查更新」要调用它。未打包时为 undefined，
+      // 界面据此如实显示「未启用」而不是给个点了没反应的按钮。
+      updaterHandle = installUpdater(updaterDeps({
         promptRestart,
         beforeInstall: markQuittingForUpdate,
       }))
@@ -1152,6 +1204,46 @@ ipcMain.on('shell:edit:close', event => {
 ipcMain.handle('shell:settings:load', event => {
   if (!settingsWebContentsIds.has(event.sender.id)) return settingsData
   return settingsData
+})
+
+/**
+ * 读取「当前版本 + 更新器是否可用」。
+ *
+ * 版本号取自 `app.getVersion()`（打包版即 package.json 的 version），与
+ * electron-updater 自己用的 `currentVersion` 同源。
+ *
+ * 单独一条 IPC 而不是塞进 `shell:settings:load`：版本号与更新器状态**不是设置**
+ * （不可写、不落盘），混进去会让 settings.json 的结构与界面字段一一对应的
+ * 关系被打破——那条关系正是不加映射层就能直接 `normalizeSettings(input)` 的前提。
+ */
+ipcMain.handle('shell:settings:version', event => {
+  if (!settingsWebContentsIds.has(event.sender.id)) {
+    return { version: '', updaterAvailable: false }
+  }
+  return {
+    version: app.getVersion(),
+    // 未打包（开发模式）或用户关掉了检查时为 false → 界面禁用按钮并说明原因。
+    updaterAvailable: updaterHandle !== undefined,
+  }
+})
+
+/**
+ * 「立即检查更新」。
+ *
+ * **不复用 `shell:settings:save`**：那一条会写盘，而检查更新不改任何设置。
+ * 分开之后这条路径没有副作用，也就不需要担心并发写。
+ */
+ipcMain.handle('shell:settings:checkUpdate', async event => {
+  if (!settingsWebContentsIds.has(event.sender.id)) {
+    return { outcome: 'disabled' as const, version: '' }
+  }
+  // 更新器没装配（开发模式，或用户在设置里关掉了检查）→ 如实告知，
+  // 而不是假装检查了一遍。
+  if (updaterHandle === undefined) {
+    return { outcome: 'disabled' as const, version: app.getVersion() }
+  }
+  const outcome = await updaterHandle.checkNow()
+  return { outcome, version: app.getVersion() }
 })
 
 ipcMain.handle('shell:settings:save', async (event, input: unknown) => {

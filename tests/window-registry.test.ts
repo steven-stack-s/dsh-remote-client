@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   focusTargetFor,
+  hostOpenEffect,
   isKnownHostWebContents,
 } from '../src/main/window-registry.js'
 
@@ -60,5 +61,57 @@ describe('focusTargetFor（Review Focus #2：唤起哪一台）', () => {
   it('一个窗口都没有、也没有主机 → 欢迎页（绝不能「点了没反应」）', () => {
     expect(focusTargetFor({ openHostIds: [], lastFocusedId: undefined, fallbackWindowExists: false }))
       .toEqual({ kind: 'welcome' })
+  })
+})
+
+describe('hostOpenEffect（#2：托盘切换主机时开新窗口还是替换当前窗口）', () => {
+  it('该主机已开着 → 无论设置如何都只是唤起它（不得并存两个窗口）', () => {
+    // 「同一 host 至多一个窗口」是硬不变量：同一个 origin 两份 WebSocket
+    // 连同一台 dsh 既浪费又会互相打架。
+    expect(hostOpenEffect({
+      targetAlreadyOpen: true,
+      currentHostId: 'a',
+      openInNewWindow: true,
+    })).toBe('focus')
+
+    expect(hostOpenEffect({
+      targetAlreadyOpen: true,
+      currentHostId: 'a',
+      openInNewWindow: false,
+    })).toBe('focus')
+  })
+
+  it('目标不是当前主机 + 开了新窗口选项 → 保留当前窗口（另开一个）', () => {
+    expect(hostOpenEffect({
+      targetAlreadyOpen: false,
+      currentHostId: 'a',
+      openInNewWindow: true,
+    })).toBe('keep-open')
+  })
+
+  it('目标不是当前主机 + 关掉选项 → 替换当前窗口（用户要的默认行为）', () => {
+    expect(hostOpenEffect({
+      targetAlreadyOpen: false,
+      currentHostId: 'a',
+      openInNewWindow: false,
+    })).toBe('replace')
+  })
+
+  it('目标就是当前主机且它开着 → 也是 focus（等价于唤起自己）', () => {
+    expect(hostOpenEffect({
+      targetAlreadyOpen: true,
+      currentHostId: 'a',
+      openInNewWindow: false,
+    })).toBe('focus')
+  })
+
+  it('没有当前主机（例如刚启动/刚删光）→ 不管设置都直接开，没有「替换」的对象', () => {
+    for (const openInNewWindow of [true, false]) {
+      expect(hostOpenEffect({
+        targetAlreadyOpen: false,
+        currentHostId: undefined,
+        openInNewWindow,
+      })).toBe('keep-open')
+    }
   })
 })

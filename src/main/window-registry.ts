@@ -120,3 +120,45 @@ export function focusTargetFor(input: {
 
   return { kind: 'welcome' }
 }
+
+/** 「打开某台主机」时对窗口做的事。 */
+export type HostOpenEffect =
+  /** 该主机已开着 → 只唤起它（**不新建窗口**）。 */
+  | 'focus'
+  /** 新建/唤起目标主机的窗口，**保留**当前主机窗口（多窗口并行）。 */
+  | 'keep-open'
+  /** 新建目标主机的窗口，并**销毁**当前主机窗口（替换）。 */
+  | 'replace'
+
+/**
+ * 打开一台主机时该怎么处理当前窗口。
+ *
+ * 这是用户从托盘的「主机列表」（或菜单栏的「主机(H)」）切换主机时走的判定。
+ *
+ * **`openInNewWindow` 设置对这条路径同样必须生效**——它最初只接在「页面里跨主机
+ * 跳转」上（`windowOpenDecision`），但用户实际用得最多的入口恰恰是托盘的
+ * 主机列表。真机反馈：勾与不勾都是开新窗口，因为这条路径此前根本没读该设置。
+ *
+ * 规则（顺序即优先级）：
+ * 1. **目标已开着 → `focus`**：无论设置如何都不新建。「同一 host 至多一个窗口」
+ *    是硬不变量——同一个 origin 并存两份 WebSocket 连同一台 dsh，既浪费又会
+ *    让页面状态互相打架；
+ * 2. 没有当前主机 → `keep-open`：没有「替换」的对象，直接开；
+ * 3. 设置**开** → `keep-open`（保留当前窗口，多窗口并行）；
+ * 4. 设置**关** → `replace`（替换当前窗口，即升级前的既有行为）。
+ *
+ * @param input - 判定输入。
+ * @returns 该执行的动作。
+ */
+export function hostOpenEffect(input: {
+  /** 目标主机当前是否已有打开的窗口。 */
+  targetAlreadyOpen: boolean
+  /** 当前主机（最后聚焦的那台）的 id；没有时为 undefined。 */
+  currentHostId: string | undefined
+  /** 用户设置：跨主机是否开新窗口。 */
+  openInNewWindow: boolean
+}): HostOpenEffect {
+  if (input.targetAlreadyOpen) return 'focus'
+  if (input.currentHostId === undefined) return 'keep-open'
+  return input.openInNewWindow ? 'keep-open' : 'replace'
+}

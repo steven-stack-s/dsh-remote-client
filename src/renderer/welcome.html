@@ -4,32 +4,34 @@
     <meta charset="utf-8" />
     <title>添加 dsh 主机</title>
     <style>
-      :root { color-scheme: dark; }
+      :root { color-scheme: light; }
       body {
         margin: 0; height: 100vh; display: grid; place-content: center;
-        background: #151517; color: #e6edf3;
+        background: #ffffff; color: #1f2328;
         font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
       }
       form { width: 420px; display: grid; gap: 10px; }
       h1 { font-size: 16px; margin: 0 0 6px; }
-      label { font-size: 13px; color: #8b949e; }
+      label { font-size: 13px; color: #59636e; }
       input {
         padding: 9px 12px; font-size: 14px; border-radius: 8px;
-        border: 1px solid #30363d; background: #0d1117; color: #e6edf3;
+        border: 1px solid #d1d9e0; background: #ffffff; color: #1f2328;
       }
       button {
         margin-top: 8px; padding: 10px; font-size: 14px; border: 0;
         border-radius: 8px; background: #4c8bf5; color: #fff; cursor: pointer;
       }
-      button.secondary { background: #30363d; }
-      p.err { color: #f85149; font-size: 13px; min-height: 18px; margin: 0; }
-      p.hint { color: #8b949e; font-size: 12px; line-height: 1.7; margin: 0; }
+      button.secondary {
+        background: #f6f8fa; color: #1f2328; border: 1px solid #d1d9e0;
+      }
+      p.err { color: #d1242f; font-size: 13px; min-height: 18px; margin: 0; }
+      p.hint { color: #59636e; font-size: 12px; line-height: 1.7; margin: 0; }
       .restart {
         display: none; gap: 8px; padding: 12px; border-radius: 8px;
-        border: 1px solid #9e6a03; background: #2d2305;
+        border: 1px solid #d4a72c; background: #fff8c5;
       }
       .restart.show { display: grid; }
-      .restart p { margin: 0; font-size: 13px; color: #e3b341; line-height: 1.7; }
+      .restart p { margin: 0; font-size: 13px; color: #7d4e00; line-height: 1.7; }
       .restart button { margin-top: 0; }
     </style>
   </head>

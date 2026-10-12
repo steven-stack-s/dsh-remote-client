@@ -36,6 +36,7 @@ import {
   UPDATE_CHECK_DELAY_MS,
   UPDATE_CHECK_INTERVAL_MS,
   shouldPromptForUpdate,
+  type UpdateCheckOutcome,
 } from './update-policy.js'
 import { readPromptedVersion, writePromptedVersion } from './update-state.js'
 
@@ -228,20 +229,43 @@ let installed = false
 const prompting = new Set<string>()
 
 /**
+ * 更新器的对外句柄，供设置界面的「立即检查更新」按钮使用。
+ *
+ * 之所以要返回句柄：`installUpdater` 此前是纯装配函数（返回 void），而设置里
+ * 新增的按钮需要**主动触发一次检查**。不做成模块级可变导出——那会让「谁装配的」
+ * 与「谁在用」脱钩，也让测试无从注入。
+ */
+export interface UpdaterHandle {
+  /**
+   * 立即检查一次更新。
+   *
+   * **绝不抛**（与装配期的约定一致）：失败归类成 `'error'` 返回，由界面显示。
+   *
+   * @returns 这次检查的结局。
+   */
+  checkNow: () => Promise<UpdateCheckOutcome>
+}
+
+/**
  * 装配自动更新。**启动期只做一件事：定时器**，真正的检查在 30 秒之后。
  *
  * 全部失败路径都只记日志、绝不抛出：更新是锦上添花的能力，它挂掉绝不能
- * 影响窗口、托盘、主机连接这些主链路。因此本函数没有返回值，也不抛。
+ * 影响窗口、托盘、主机连接这些主链路。
  *
  * @param deps - 外部依赖，见 {@link UpdaterDeps}。
+ * @returns 更新器句柄；**未打包时返回 undefined**——调用方据此在设置界面上
+ *   如实显示「未启用」，而不是给一个点了没反应的按钮。
  */
-export function installUpdater(deps: UpdaterDeps): void {
+export function installUpdater(deps: UpdaterDeps): UpdaterHandle | undefined {
   // 约束 1：开发模式下 electron-updater 会因缺 app-update.yml 报错。
-  if (!deps.isPackaged) return
+  if (!deps.isPackaged) return undefined
 
   // I2：幂等。boot() 可重入（macOS 的 activate 路径），重复注册会让一次
   // update-downloaded 触发两遍处理、并多出重复的定时器。
-  if (installed) return
+  //
+  // 幂等时**仍要返回句柄**：否则第二次调用会把一个本来可用的更新器报告成
+  // 「未启用」，设置里的按钮跟着失效。
+  if (installed) return { checkNow: currentCheckNow }
   installed = true
 
   try {
@@ -349,6 +373,10 @@ export function installUpdater(deps: UpdaterDeps): void {
     // 没有更新器，应用照常可用。
     logError('自动更新装配失败（已忽略，不影响使用）：', error)
   }
+
+  // 装配失败也返回句柄：`checkNow` 自己会 try/catch 并返回 `'error'`，
+  // 因此设置里的按钮点了不会崩，只会如实显示「检查更新失败」。
+  return { checkNow: currentCheckNow }
 }
 
 /**
@@ -357,8 +385,13 @@ export function installUpdater(deps: UpdaterDeps): void {
  * `checkForUpdates()` 在「没有新版本」时是正常 resolve 的（`isUpdateAvailable`
  * 为 false），因此只有异常才需要记日志。**失败不再重试排程**：6 小时的周期
  * 检查本身就是重试。
+ *
+ * 返回结局供设置界面显示——但**只在这一处判断**：定时检查调用它时会丢弃返回值
+ * （没人看），手动检查会把它交给界面。
+ *
+ * @returns 这次检查的结局。
  */
-async function checkNow(): Promise<void> {
+async function checkNow(): Promise<UpdateCheckOutcome> {
   try {
     logStep(`开始检查更新（当前版本 ${currentVersionText()}）`)
     const result = await autoUpdater.checkForUpdates()
@@ -370,11 +403,26 @@ async function checkNow(): Promise<void> {
     // 失败走下面的 catch。
     if (result?.isUpdateAvailable === false) {
       logStep('检查完成：当前已是最新版本')
+      return 'up-to-date'
     }
+    // 有新版本：`update-available` 的 handler 已经接手去下载了。
+    // 这里不需要区分「发现新版」与「正在下载」——那是界面自己按最后一次结局
+    // 与后续事件推断的，检查函数只知道「不是最新、也不是失败」。
+    return 'available'
   } catch (error) {
     logError('检查更新失败（已忽略，不影响使用）：', error)
+    return 'error'
   }
 }
+
+/**
+ * 最近一次装配出来的检查函数。
+ *
+ * 存在理由只有一个：让**幂等的第二次** `installUpdater` 调用也能返回一个可用的
+ * 句柄（见那里的说明）。它指向的始终是同一个 `checkNow`，因此不需要在每次装配
+ * 时重新赋值——但保留赋值语句可以让「谁提供它」一目了然。
+ */
+let currentCheckNow: () => Promise<UpdateCheckOutcome> = checkNow
 
 /**
  * 更新已下载完成 → 询问用户是否立即重启安装。
