@@ -320,7 +320,206 @@ When you click a link, the client routes it by "**is this target a site we alrea
 
 ---
 
-## 4. Offline and auto-reconnect (a fixed item, verify carefully)
+## 4. Client settings window (added in 0.2.0 / 0.2.1, verify carefully)
+
+The **client's own** behaviour preferences. These settings **only affect the client** (notifications, startup and close-window behaviour, updates) and do **not** touch the remote dsh — dsh's own preferences are still managed by the settings panel inside the dsh web UI.
+
+### 4.0 The three entry points (all three must work)
+
+| Entry point | Action | Expected |
+|---|---|---|
+| Tray | Tray → 「**客户端设置**」 (Client settings) | Opens the 「客户端设置」 (Client settings) window (560×640) |
+| Menu bar | 「编辑(E)」 (Edit(E)) → 「**设置…**」 (Settings…) | The same window (macOS / Linux; on Windows the menu bar is not shown — see §3.00) |
+| Shortcut | `Ctrl+,` (`Cmd+,` on macOS) | The same window |
+
+> ⚠️ **`Ctrl+,` must work on Windows.** This one is deliberately double-registered: once on the application menu and once as an **in-window** `before-input-event` handler. On Windows the host window is frameless and the menu bar is not shown at all, so with only the menu-bar registration this key would **do absolutely nothing**. Please verify this one specifically.
+>
+> **Only one settings window may exist**: invoking an entry point while it is already open must **raise the existing window** (restoring it first if minimised), **not** open a second one. Two windows editing the same `settings.json` would overwrite each other.
+
+### 4.1 The five preferences plus the version area (confirm each one exists and saves)
+
+| Group | Setting | Default | Expected behaviour |
+|---|---|---|---|
+| Notifications | 「弹出系统通知」 (Show native notifications) | **on** | When off, neither approval requests nor new messages raise a system notification |
+| Notifications | 「消息通知的静默期」 (Quiet period for message notifications) | **15 seconds** (range 15–300) | After a round of output ends, wait this long with no new output before notifying. **Approval notifications ignore it** and always fire immediately |
+| Startup & close | 「启动时」 (On startup) | **Open the last host** | Switchable to 「每次显示「添加主机」页」 (always show the "Add host" page) |
+| Startup & close | 「关闭窗口时收进托盘（不退出）」 (Hide to tray instead of quitting) | **on** | When off, **closing the window quits** the client |
+| Updates | 「启动后在后台检查新版本」 (Check for updates after startup) | **on** | When off, **the updater is not wired up at all** (you will not even get the "restart to install?" prompt) |
+| Updates | 「当前版本」 (Current version) + 「立即检查更新」 (Check for updates now) | — | See §4.4 |
+
+**The five preferences all default to the pre-0.2.0 hard-coded behaviour** — after upgrading, not touching them should leave behaviour **exactly as before**.
+
+> Try one out-of-range value on the quiet-period input: enter `0` or `9999`; on save the box should be **corrected to 15 / 300** (clamped once in the UI layer and once in the main process).
+
+### 4.2 Changes take effect immediately (no restart)
+
+The settings window does **not** do the "takes effect after a restart" thing: consumers read the **current** value rather than a snapshot taken at startup. Verify each one:
+
+| What you change | How to verify immediately | Expected |
+|---|---|---|
+| Turn off 「弹出系统通知」 (Show native notifications) | Let the agent finish a round, then switch away from the window | No notification appears any more |
+| Set the quiet period to 60 seconds | Let the agent finish a round, then switch away | The notification appears **clearly later** than 15 seconds |
+| Turn off 「关闭窗口时收进托盘」 (Hide to tray) | Click the ✕ of a host window | **The app quits outright** (the opposite of §3.1's default behaviour) — please turn it back on afterwards |
+| Set 「启动时」 (On startup) to always show the "Add host" page | Quit the client and start it again | It stops on the welcome page even though hosts were configured |
+| Turn off 「启动后在后台检查新版本」 (Check for updates after startup) | Restart the client, wait more than 30 seconds, read `update.log` | 「开始检查更新」 (an update check started) no longer appears (see §8.1) |
+
+> ⚠️ The "close quits" item takes effect **immediately, on windows that are already open** (host behaviour reads the current value). If it still hides to the tray after you change it, the read-fresh behaviour is not working — please report it.
+
+### 4.3 Where settings live and what happens when the file is corrupt
+
+Settings live in `%APPDATA%\dsh-remote-client\settings.json` (`%APPDATA%` is `app.getPath('userData')`).
+
+**Verifying "a corrupt file is never silently discarded"**:
+1. Note down any values you changed; quit the client completely;
+2. Replace the contents of `settings.json` with text that is **not JSON** (e.g. `{{{`);
+3. Start the client again → open the settings window.
+
+**Expected**:
+- A backup **`settings.json.corrupt-<timestamp>`** appears in the same directory (the original was renamed to preserve the evidence);
+- The settings window shows **all default values**, and the client is fully usable.
+
+> 📌 **"The file is old" and "the file is broken" are handled differently — do not confuse them.** A `corrupt-` backup is produced **only when the file is not JSON at all**. If the file parses but is merely **missing a field** (written by an older version, fewer items than the current one), each missing field simply falls back to its default — and **no backup is produced**. Renaming a file that parses would leave users staring at a folder full of mysterious `corrupt` files.
+>
+> So do **not** expect a backup from "set one field to an illegal value" either: that case is per-field fallback (the bad one reverts to its default, the rest are kept as they are), and it also produces no backup.
+
+### 4.4 Settings → Updates: version number and "check for updates now" (added in 0.2.1)
+
+The 「更新」 (Updates) group should show the **current version number** and offer a 「立即检查更新」 (Check for updates now) button.
+
+| Scenario | Action | Expected |
+|---|---|---|
+| Version number | Open the settings window and look at 「当前版本」 (Current version) | Shows the **version you are actually running** (of the form `0.2.5`, **without a `v` prefix**, matching the installer filename and `package.json`) |
+| Packaged build, button pressed | Install via the installer, then press 「立即检查更新」 (Check for updates now) | 「正在检查…」 ("Checking…") appears briefly, then one of the outcomes in the table below |
+| **Development mode** | Open the settings window under `pnpm dev` | The version shows normally; the button is **disabled** and already explains why: 「当前未启用更新检查（开发模式下不检查；也可能是你把上面的开关关掉了）。」 |
+
+> ⚠️ **In development mode the button must be "disabled + explains why", not "does nothing when clicked"** — a button you cannot press is worse than no button. **This one can be verified in development mode**, no installer needed.
+
+**The outcome messages** (five of them — just check each one lines up):
+
+| Outcome | Message |
+|---|---|
+| Up to date | 已是最新版本。 |
+| New version found | 发现新版本 **X**，正在后台下载；下载完成后会询问是否重启。 |
+| Downloading | 新版本 **X** 正在下载中，请稍候。 |
+| Failed | 检查更新失败（网络不通或更新源异常）。稍后会再自动检查，不影响使用。 |
+| Not enabled | 当前未启用更新检查（开发模式下不检查；也可能是你把上面的开关关掉了）。 |
+
+> ⚠️ **The X in "发现新版本 X" must be the *new* version, not the current one.** There was a real on-device defect here: the upgrade dialog said 0.2.2 had finished downloading, while the same page read "found new version 0.2.1" — the root cause being that the field was filled with the version **currently running** (fixed in 0.2.3). **When verifying, check that the version in the message is not the same number as the one you are running.**
+>
+> When the version cannot be read the UI shows 「**未知**」 ("unknown"). **Inventing a version number is far worse than saying unknown** — the user would go looking for an installer that does not exist.
+
+---
+
+## 5. Several host windows in parallel (added in 0.2.0, settled in 0.2.5)
+
+### 5.0 The model: one window per host
+
+Before 0.2.0 there was **only one host window at a time** (switching hosts closed the old window). Since 0.2.0 windows live in a **registry indexed by host id**, therefore:
+
+| Action | Expected |
+|---|---|
+| Open a second host with 「新窗口打开」 (Open in new window — see §3.05) | **Two hosts, one window each**, visible and connected at the same time |
+| Login state in the two windows | They do not interfere (partitions are isolated per origin) |
+
+**Since 0.2.0 "the current host" degrades to "the last one focused"** — a **deliberate downgrade** (with several windows open there is no single "current" one). It decides where the menu's `●` marker sits and which window the tray's 「重新加载」 (Reload) / 「立即重试」 (Retry Now) target. To verify: click window A, then click window B; the `●` in the tray's 「主机列表」 (Host List) should move with it.
+
+### 5.1 At most one window per host (a hard invariant)
+
+**This is an invariant, not an optimisation**: two windows on the same origin would mean two WebSockets against the same dsh, which is both wasteful and makes the pages fight over the same state.
+
+| Action | Expected |
+|---|---|
+| Choosing 「打开」 (Open) for a host that is **already open** | Merely **raises** the existing window (creates nothing) |
+| Choosing 「新窗口打开」 (Open in new window) for a host that is **already open** | Also merely **raises** the existing window (creates nothing and does not keep two) |
+
+> Hence "either action on an already-open host just raises it" — already stated in §3.05; here it is in its multi-window form.
+
+### 5.2 「打开」 (Open) vs 「新窗口打开」 (Open in new window) (0.2.5, verify carefully)
+
+From 0.2.0 to 0.2.4 a **global setting** (「跨主机跳转时开新窗口」 / `openInNewWindow`) decided this, and two releases failed to converge; 0.2.5 **deleted** it in favour of **choosing explicitly each time** from the menu.
+
+**Precondition**: add two hosts (the second may be a non-existent address) and open at least one of them.
+
+| Action | Expected | What a failure means |
+|---|---|---|
+| Tray/menu → 「主机列表」 (Host List) → another host → 「**打开**」 (Open) | The target host opens **inside the current window** and **the current window is replaced** (no extra window appears) | `hostOpenEffect`'s `replace` branch was not reached |
+| Tray/menu → 「主机列表」 (Host List) → a third host → 「**新窗口打开**」 (Open in new window) | **Another window opens** and the current one is **kept** | The `keep-open` branch was not reached |
+| Choosing either action for an **already-open** host | Only **raises** it, creates nothing (see §5.1) | The invariant is broken |
+| Looking for 「跨主机跳转时开新窗口」 (Open cross-host jumps in a new window) in the menu | **It should not be there** — the item was deleted in 0.2.5 | You are running 0.2.4 or earlier |
+
+> ⚠️ **「打开」 (Open) first returns to that host**: if the window's page has already been carried off by the portal with a 302 (left sitting on the portal desktop — see §3.0), choosing 「打开」 reloads it back onto that host before raising it. **The user's intent in choosing 「打开」 is to get back to that host**, not to be raised onto a window displaying the portal. Please verify this one specifically (it is easiest to see in a portal deployment).
+>
+> 📌 **Links inside pages are no longer governed by any switch**: clicking a dsh shortcut in the portal **always opens inside the current window** (see §3.05). "Open in a new window" only ever comes from the menu.
+
+### 5.3 Three things to confirm specifically with several windows
+
+When 0.2.0 shipped, **the real interaction of multiple windows had not yet been verified on a real machine** (that version's Notes list this explicitly). Please walk through the following with care:
+
+| # | Verification | Expected | Why it needs its own check |
+|---|---|---|---|
+| 1 | With two hosts open, trigger a notification from the **non-current** one | The notification title names **the host that raised it**, and clicking it **returns to that one** | Taking "the current host" would make window B's notification show A's name and jump to A when clicked |
+| 2 | Give the two hosts **different skins** in dsh (dark / light), switching focus back and forth | Each window's top strip **follows its own page** | `nativeTheme` is a **process-level singleton**, so two windows with different skins risk overwriting each other — please record honestly what you actually see |
+| 3 | Close **every** window one by one | The app **does not quit**, the tray is still there, and 「打开客户端」 (Open Client) brings a window back | With multiple windows, the "all windows closed" quit decision needs re-confirming (with a usable tray it should stay resident anyway) |
+
+> If item 2 produces "the window I touched last recoloured the other one too", **please report it with a screenshot** — that would mean the process-level singleton really does bleed across, and it is a trade-off to schedule into a later version.
+
+---
+
+## 6. Shell page appearance and window form (0.2.1 / 0.2.2)
+
+### 6.1 The shell pages are uniformly white now (changed in 0.2.1)
+
+**Before**, these four pages were dark (`#151517`). From 0.2.1 they are **white**, and the whole palette (text, borders, secondary buttons, warning boxes, success/failure colours) moved to light, readable values along with it.
+
+| Page | When you see it | Expected |
+|---|---|---|
+| **welcome** (welcome page / "Add host") | First launch, tray 「添加主机…」 (Add Host…) | White background, dark text; inputs and buttons clearly readable |
+| **edit** (edit host) | Tray 「编辑主机…」 (Edit Host…) / `Ctrl+E` | As above; the yellow warning strip shown when changing the address is still clearly readable on white |
+| **settings** (client settings) | Tray 「客户端设置」 (Client settings) / `Ctrl+,` | As above |
+| **offline** (offline page) | When the remote is unreachable (see §7) | As above; the failure reason and the `DSH_TRUSTED_HOSTS` hint are readable |
+
+> ⚠️ **Look specifically for white-on-white**: changing only the background without the text colour is exactly how you get that. 0.2.1 changed the whole palette deliberately, so anywhere you cannot read something is a defect.
+>
+> **These pages being light has nothing to do with dsh's own theme**: these four are the shell's own `file://` pages and do not follow dsh's skin (skinning refers to the **top strip of the host window** — see the "top strip follows the theme" row in §3).
+
+### 6.2 The top of the settings page must be reachable (fixed in 0.2.3)
+
+When the settings page is taller than one screen, **the topmost row (the 「客户端设置」 (Client settings) title and the 「弹出系统通知」 (Show native notifications) switch) must be scrollable into view**.
+
+> ⚠️ There was a real on-device defect here: `body` used `height: 100vh` + `place-content: center`. When the form is taller than the viewport, the grid track is "centered" outside the container and **its upper half lands at negative coordinates**, while the scroll region starts at 0 — so that part was **unreachable by scrolling** (in the screenshot the topmost item was the quiet period rather than the title). Changing it to `min-height` fixed it.
+>
+> **Verification**: drag the settings window as short as it will go, then confirm you can scroll to the 「客户端设置」 (Client settings) title and the first switch.
+
+### 6.3 On Windows the host window's DevTools opens in a separate window (**a window-form constraint, not a defect**)
+
+Pressing `Ctrl+Shift+I` or `F12` in the **host window** makes DevTools **pop out into a separate window** rather than dock on the right.
+
+**This is a measured conclusion — please do not report it as a defect.** An on-device experiment with the same code and the same mode:
+
+| Window | Framed? | Behaviour of `Ctrl+Shift+I` |
+|---|---|---|
+| Client settings (**framed**) | Yes | **Docked** (split to the right) |
+| Host window (Windows, **frameless**) | No | **Separate window** |
+
+**Cause**: on Windows the host window is **frameless** (the top strip is handed to dsh to draw itself, so it can follow the app theme — see §3). Frameless means "no chrome", and docking DevTools needs the window's own chrome layout container — **it has nothing to do with the `mode` argument**.
+
+**This is a deliberate trade-off** (the user has explicitly chosen to **keep the self-drawn top strip and accept DevTools popping out**): the only way to dock DevTools in the host window is to drop the frameless style, and that would sacrifice the themed top strip. **On macOS / Linux the host window is framed, so DevTools docks normally.**
+
+> So this is **not** a pending fix. If you find DevTools popping out in a *framed* window (settings / edit / add host), **that** is a defect — please report it.
+
+### 6.4 Title, shortcut and window-menu behaviour for the settings window
+
+| Action | Expected |
+|---|---|
+| Window title | 「客户端设置」 (Client settings) |
+| Window size | 560×640 |
+| Menu bar at the top of the settings window | **None** — the rule is "the menu bar only grows on host windows", so 「删除主机…」 (Delete Host…) cannot be triggered from in here and act on some other window |
+| Press `Ctrl+W` in the settings window | It closes. This is a **shell-owned tool window**, not the window carrying a host session — closing it really closes it, there is no "hide to the tray" semantics |
+| Press `Ctrl+R` in the settings window | Reloads the settings page itself (it is a local page; there is no "re-request the host origin" semantics here) |
+
+---
+
+## 7. Offline and auto-reconnect (a fixed item, verify carefully)
 
 The spec requires exponential-backoff retry (1s→2s→4s→8s→…→30s), which **was previously not implemented at all**.
 
@@ -343,34 +542,39 @@ The spec requires exponential-backoff retry (1s→2s→4s→8s→…→30s), whi
 
 ---
 
-## 5. Automatic (differential) updates — ⚠️ requires v0.1.8 to be published first
+## 8. Upgrade acceptance (automatic / differential updates)
 
-**This is the one section that cannot be run yet.** The reason is below.
+**This section is the acceptance procedure for upgrading `<old version>` → `<new version>`.** It is written with placeholders on purpose: hard-coding two version numbers would go stale on every release (the guide has already been caught out that way once — it still carried the 0.1.0 hash when 0.1.1 was the published build). Read `<old version>` as "the version you currently have installed" and `<new version>` as "the version you are upgrading to".
 
-### 5.0 Why it cannot run yet: two releases are required
+Automatic updating verifies that an *old* client can fetch a *new* version, so it inherently needs **two** versions: one installed, one published. Nothing here needs a version to be "released first" — every step below runs against whatever pair is current at the time you read this (as of writing, 0.2.5 is the released version).
 
-Automatic updating verifies that an *old* client can fetch a *new* version, so it inherently needs two versions:
+> 📌 **This section used to hard-code `v0.1.7 → v0.1.8` and carry the heading "requires v0.1.8 to be published first". That premise expired long ago** (the released version is now **0.2.5**, and the automatic-update path has been running normally since 0.1.7). The note is kept so that readers do not re-interpret the section by the old numbering — the acceptance value of every step is unchanged; only the version numbers are now yours to fill in.
+
+> ⚠️ **One precondition that never goes away**: the **installed** client must already be **0.1.7 or newer**. Versions 0.1.6 and earlier contain no updater at all, so they can only be upgraded by downloading the installer by hand — see §10.
+
+### 8.0 Two versions are required
 
 | Version | Contents | Who installs it |
 |---|---|---|
-| **v0.1.7** | Ships the updater and `latest.yml` / `.blockmap` for the first time | Still a **manual install** (the last 106MB one) |
-| **v0.1.8** | Any small change | **Nobody** — an installed 0.1.7 should find it by itself |
+| **`<old version>`** | The version currently installed, which carries the updater and publishes `latest.yml` / `.blockmap` | **Installed by hand** — the last 106MB manual install before this path takes over |
+| **`<new version>`** | Any small change | **Nobody** — an installed `<old version>` should find it by itself |
 
 Therefore:
 
-- **Before v0.1.8 is published**, 0.1.7 can only be used to verify "it does not error and does not affect normal use" (§5.1). There is no target version to update to, so nothing happens — that is correct behaviour, not a defect.
-- **After v0.1.8 is published**, the full chain in §5.2 can be verified.
+- **Before `<new version>` is published**, `<old version>` can only be used to verify "it does not error and does not affect normal use" (§8.1). There is no target version to update to, so nothing happens — that is correct behaviour, not a defect.
+- **After `<new version>` is published**, the full chain in §8.2 can be verified.
 
-### 5.1 Before v0.1.8: confirm it stays out of the way (do this now)
+### 8.1 Confirm it stays out of the way
 
-These four checks can be run right now, and **any failure is a real defect**:
+These checks **do not need a second version** to run, and **any failure is a real defect**:
 
 | Action | Expected |
 |---|---|
-| Launch the client normally (installed package) | UI, tray and host connection are **exactly as before**, no different from 0.1.6 |
+| Launch the client normally (installed package) | UI, tray and host connection are **exactly as before** — installing a version with the updater changes nothing you can see |
 | Launch it, then leave it idle for **1 minute** while watching | **No window or dialog ever appears** (including no pointless "you are up to date" notice) |
 | **Launch with the network down** (pull the cable / turn off Wi-Fi) | Still **no error dialog**. Only one line in `update.log`: `检查更新失败（已忽略，不影响使用）…` |
 | Launch in `pnpm dev` development mode | Nothing pops up either. The updater **does not start at all in development mode** (there is no `app-update.yml`, and starting it would only spam error logs) — this is deliberate |
+| Turn off 「启动后在后台检查新版本」 (Check for updates after startup) in settings, then launch | **The updater is not wired up at all**, and 「更新器启动」 (updater started) **does not appear** in `update.log` (since 0.2.0; see §4.1 and §4.4) |
 
 > **Where to read the log (definitive answer since v0.1.7)**
 >
@@ -388,12 +592,25 @@ These four checks can be run right now, and **any failure is a real defect**:
 >   Select-Object FullName
 > ```
 >
-> Each line carries an ISO timestamp:
+> Each line carries an ISO timestamp. **The sample below is a historical sample** — it was
+> captured on 2026-10-11 while 0.1.7 was the installed version, so do not read 0.1.7 as
+> "the version you should be running"; only the *shape* of the lines matters:
 >
 > ```
 > 2026-10-11T02:31:07.512Z 更新器启动（当前版本 0.1.7，日志位于 update.log）
 > 2026-10-11T02:31:37.480Z 开始检查更新（当前版本 0.1.7）
 > ```
+>
+> In your own log the version in parentheses is whatever you have installed.
+>
+> Since 0.1.8 "no new version found" also leaves a line — 「检查完成：当前已是最新版本」 — so
+> **"there genuinely is no new version" and "it failed silently" can be told apart** (0.1.7 did
+> not have that line).
+>
+> Since 0.1.9 the library's own internal log is piped into `update.log` as well (prefixed
+> `[库]` / `[库·警告]` / `[库·错误]`, i.e. "[lib]" / "[lib·warning]" / "[lib·error]"), so a failed
+> differential download falling back to the full package is stated explicitly instead of being
+> inferred from timings.
 >
 > It keeps at most the latest 200 lines (each truncated to 400 characters), so it
 > **cannot grow without bound** and can safely be left in place.
@@ -403,24 +620,27 @@ These four checks can be run right now, and **any failure is a real defect**:
 > leaving "why did the update do nothing on a real machine?" with no evidence at all.
 > `update.log` is that evidence now.
 
-### 5.2 After v0.1.8 is published: the full chain (this is the important part)
+### 8.2 The full chain (this is the important part)
 
-**Precondition**: v0.1.8 has been published to a Release as a tag, and that Release **contains all three files** — `setup.exe`, `latest.yml` and `*.exe.blockmap` (see "Three files in the Release" in the README).
+**Precondition**: `<new version>` has been published to a Release as a tag, and that Release **contains all three files** — `setup.exe`, `latest.yml` and `*.exe.blockmap` (see "Three files in the Release" in the README).
 
 Run these in order and **look at the result of every step**:
 
 | # | Action | Expected | What a failure means |
 |---|---|---|---|
-| 1 | Confirm you are running **0.1.7**, launch the client and wait about **30 seconds** | `update.log` shows 「开始检查更新」 (an update check started) — see §5.1 for how to read it | The timer never fired |
-| 2 | Leave it running and wait for the background download to finish | A dialog appears: 「新版本 **0.1.8** 已下载完成，现在重启安装吗？」 with buttons 「立即重启」 / 「稍后」 | The quiet-period/policy logic swallowed the prompt |
+| 1 | Confirm you are running **`<old version>`**, launch the client and wait about **30 seconds** | `update.log` shows 「开始检查更新」 (an update check started) — see §8.1 for how to read it | The timer never fired |
+| 2 | Leave it running and wait for the background download to finish | A dialog appears: 「新版本 **`<new version>`** 已下载完成，现在重启安装吗？」 with buttons 「立即重启」 / 「稍后」 | The quiet-period/policy logic swallowed the prompt |
 | 3 | **Record the actual number of bytes downloaded** (see below) | Clearly less than 106MB | Differential download did not take effect and it fell back to the whole package |
-| 4 | Click **「立即重启」 (Restart now)** | The app **really does exit**, installs briefly, **reopens by itself**, and the version is now **0.1.8** | ⚠️ See "Known trap" below |
-| 5 | Confirm the version after the restart | About box / window title / the version corresponding to `package.json` are all 0.1.8 | The install did not actually complete |
+| 4 | Click **「立即重启」 (Restart now)** | The app **really does exit**, installs briefly, **reopens by itself**, and the version is now **`<new version>`** | ⚠️ See "Known trap" below |
+| 5 | Confirm the version after the restart | The settings window's 「当前版本」 (Current version, §4.4) / window title / the version corresponding to `package.json` are all `<new version>` | The install did not actually complete |
 | 6 | **Start a fresh round**: click 「稍后」 (Later) and do nothing else | The dialog closes with **no side effects at all** (window, tray and host connection all unchanged) | The update disturbed the main path |
-| 7 | Continuing from above: **fully quit the client and start it again**, then wait for another check | **It does not ask about 0.1.8 a second time** (the user has already answered) | The state was not remembered and the user gets nagged repeatedly |
-| 8 | After restarting, publish a **0.1.9** to the Release (if you are willing to test it) | It prompts **again**, for 0.1.9 | The state is remembered but is not reset when the version changes |
+| 7 | Continuing from above: **fully quit the client and start it again**, then wait for another check | **It does not ask about `<new version>` a second time** (the user has already answered) | The state was not remembered and the user gets nagged repeatedly |
+| 8 | After restarting, publish a **`<next version>`** to the Release (if you are willing to test it) | It prompts **again**, for `<next version>` | The state is remembered but is not reset when the version changes |
+| 9 | Press 「**立即检查更新**」 (Check for updates now) in the settings window (§4.4) | The version in the message is **the same new version** as the dialog in step 2 | The current version was passed off as the new one (fixed in 0.2.3) |
 
-**How to record the download size in step 3**: the only real evidence that differential download works is how much was actually transferred. The most direct way is to watch the process's received traffic during the download in a system resource monitor (Windows Task Manager → Performance → Ethernet); if you launched it from a command line you can read the updater output directly. **Write the number down** — it decides whether differential updates are worth keeping at all.
+**How to record the download size in step 3**: the only real evidence that differential download works is how much was actually transferred. The most direct way is to watch the process's received traffic during the download in a system resource monitor (Windows Task Manager → Performance → Ethernet); if you launched it from a command line you can read the updater output directly — **since 0.1.9 the library's internal log also lands in `update.log`** (prefixed `[库]` / `[库·警告]` / `[库·错误]`), and a differential download falling back to the full package is stated there explicitly. **Write the number down** — it decides whether differential updates are worth keeping at all.
+
+**Reference figure**: the measured 0.1.9 → 0.1.10 upgrade on a real machine was "full package 106.3MB, actually downloaded **1.26MB** (about 1%)". Your number should be in the same order of magnitude; if it is close to 106MB, the differential download did not take effect.
 
 **Why step 4 is the single most important item in this section**:
 
@@ -434,13 +654,13 @@ Run these in order and **look at the result of every step**:
 >
 > 📌 **Do not misremember this defect as a "registration order" problem.** An earlier draft of the design doc said to "confirm that `before-quit` is registered before the updater" — that is **the wrong question**: the registration order is correct by construction (`before-quit` is registered at module top level, while `installUpdater` only runs inside `boot()`), so checking it **can never find the problem**. The real variable is the **event firing order**, and the corresponding acceptance check is step 4.
 
----
-
-## 6. LAN / remote access (optional, advanced)
+## 9. LAN / remote access (optional, advanced)
 
 When you want to use a **LAN IP or domain** (not 127.0.0.1):
 
-**5.1 trust fence** (otherwise the page opens but `/api` is all 403) — configure it in dsh-docker's `.env`:
+### 9.1 trust fence (otherwise the page opens but `/api` is all 403)
+
+Configure it in dsh-docker's `.env`:
 ```
 DSH_TRUSTED_HOSTS=192.168.1.5:3080
 ```
@@ -450,7 +670,7 @@ docker exec dsh dsh plugin --profile web add @xgone/dsh-remote
 docker restart dsh
 ```
 
-**5.2 secure context** (otherwise the clipboard stops working)
+### 9.2 secure context (otherwise the clipboard stops working)
 
 For **configured `http://` origins** the shell sets `unsafely-treat-insecure-origin-as-secure`, but **that switch can only take effect at startup**.
 
@@ -458,30 +678,36 @@ After adding `http://192.168.x.x:3080` for the first time, the welcome page show
 
 > Known minor UX wart: **re-adding the same http host** within the same session still prompts once more (semantically correct — it really has not taken effect yet, but it feels wordy).
 
-**5.3 Verify isolation**: add both an `http://` and an `https://` host and confirm their login states do not interfere.
+### 9.3 Verify isolation
+
+Add both an `http://` and an `https://` host and confirm their login states do not interfere.
 
 ---
 
-## 7. Known limitations (so you do not misjudge them as defects)
+## 10. Known limitations (so you do not misjudge them as defects)
 
 The following are **known by design**, not bugs:
 
-- **Native notifications**: **approval notifications are verified working** (the selectors come from the dsh upstream component source `dsh-client-ui-approval`, so no on-device recon is needed). **Message notifications** (reminding you when an agent reply has finished) were just added and are **awaiting on-device verification** — note that they **only pop up while the window is unfocused**, so you must switch away from the window to verify them; approval notifications, by contrast, pop up unconditionally (the agent is sitting there waiting for you).
+- **Native notifications**: **both approval and message notifications are verified working on a real machine**. Approval notifications were verified from the upstream component source `dsh-client-ui-approval` (so no on-device recon was needed); **message notifications were verified on-device back in 0.1.2** (an agent reply that finishes while the window is unfocused raises a system notification). Note that message notifications **only pop up while the window is unfocused**, so you must switch away from the window to verify them; approval notifications, by contrast, pop up unconditionally (the agent is sitting there waiting for you).
 - **Changing the IP or domain of an `http://` host = a new host**, requiring you to log in again. This is caused by dsh's cookie name being bound to the authority (`sha256(authority)`).
-- **Only one host window is kept**: switching hosts closes the old window.
+- **Several host windows are kept at once — one per host**: since 0.2.0 host windows live in a registry indexed by host id (see `src/main/window-registry.ts`), so different hosts can be open side by side. Switching hosts no longer closes the old window: 「打开」 (Open) replaces the current window, 「新窗口打开」 (Open in new window) keeps it (see §3.05). **At most one window per host** is a hard invariant — reopening a host that is already open just raises its existing window, because two windows on one origin would mean two WebSockets against the same dsh. With several windows open, "the current host" means **the last one focused** — that is what the menu's ● marker and the tray's 「重新加载」 (Reload) / 「立即重试」 (Retry Now) act on.
 - **On macOS a content window still shows the menu bar**: on Windows/Linux it has been removed per window; on macOS the menu is **application-level**, and removing it per window would also affect the host window's menu, which is not worth it. **macOS only.**
 - **A page that relies on the return value of `window.open` will error**: to make links open in the **current window** we must reject Electron's default "open a new window" behaviour, so `window.open()` returns `null`. If the page then uses that return value (e.g. `w.focus()`) it throws a JS error — the impact is limited to that page itself, and **the navigation has already been done by us**.
 - **One trade-off in link routing**: see §3.05 — if an icon points at **another** configured host, the current window loads it but the "current host" does not change.
+- **「当前主机」 ("the current host") = the last one focused** (a deliberate downgrade since 0.2.0): with several windows open there is no single "current" one, and the menu's `●` marker together with the tray's 「重新加载」 (Reload) / 「立即重试」 (Retry Now) all target it. So after clicking another window the `●` moves over — that is expected, not drift.
+- **`nativeTheme` is a process-level singleton**: if two host windows are given **different skins**, how the top strip behaves needs on-device confirmation (see §5.3 item 2). This is an open observation, not a settled behaviour.
+- **On Windows the host window's DevTools opens in a separate window (this is a window-form constraint, not a defect)**: the host window is **frameless** (so the top strip can follow the app theme), and a frameless window cannot dock DevTools. Determined by an on-device experiment with the same code and the same mode: **Client settings (framed) → docked**; **host window on Windows (frameless) → separate window**. The variable is the window form, **not the `mode` argument** — the code asks for a docked mode and the choice was made deliberately: dropping the frameless style would dock DevTools but lose the themed top strip. On macOS / Linux the host window is framed, so DevTools docks as usual. **Please do not try to "fix" this** — the only way to dock it on Windows is to give up the frameless window.
 - **Unsigned app**: if you package an exe later, Windows Defender / SmartScreen may warn; running in `pnpm dev` development mode does not involve this.
-- **Automatic updates only work in a packaged build**: under `pnpm dev` the updater does not start at all (there is no `app-update.yml`, and starting it would only spam error logs). **So no update behaviour can be verified in development mode** — you must use the installer (see §5).
-- **Every failure in automatic updating is silent**: no network, an unreachable update source or a malformed `latest.yml` all leave just one line in `update.log` and **never show a dialog**. This is deliberate (the user is not waiting for an update, so interrupting them is a net negative) — which means **"nothing happened" is usually correct behaviour**, so do not rush to report it as a defect. To tell whether it is running at all, read `update.log` (§5.1 shows how): it separates "there genuinely is no new version" from "it failed silently", which is exactly why the log exists.
+- **Automatic updates only work in a packaged build**: under `pnpm dev` the updater does not start at all (there is no `app-update.yml`, and starting it would only spam error logs). **So no update behaviour can be verified in development mode** — you must use the installer (see §8). The settings window's 「立即检查更新」 (Check for updates now) button is disabled there for the same reason, and says so (§4.4).
+- **Every failure in automatic updating is silent**: no network, an unreachable update source or a malformed `latest.yml` all leave just one line in `update.log` and **never show a dialog**. This is deliberate (the user is not waiting for an update, so interrupting them is a net negative) — which means **"nothing happened" is usually correct behaviour**, so do not rush to report it as a defect. To tell whether it is running at all, read `update.log` (§8.1 shows how): it separates "there genuinely is no new version" from "it failed silently", which is exactly why the log exists.
 - **Only prompting once is not forgetfulness**: once the user has been asked about a version, it is never asked again (the state lives in `userData/update-state.json`). If you want to see the dialog again, delete that file.
+- **「跨主机跳转时开新窗口」 (Open cross-host jumps in a new window) is gone, and that is not a missing setting**: 0.2.5 removed it (`openInNewWindow`) on purpose — the choice now belongs to the per-host 「打开」 / 「新窗口打开」 pair every time you use it (§5.2). An `openInNewWindow` field left over in `settings.json` is **ignored without migration**, and the other fields are unaffected. Its absence from the settings window is by design, not an omission.
 - **Versions 0.1.6 and earlier do not auto-update**: there is no updater in them. They must be **manually upgraded to 0.1.7 once**, after which they are on the automatic update path.
-- **Uninstalling keeps `update-state.json`**: it is kept along with the other user data (uninstalling does not clear `userData`). The "already prompted version" therefore carries over after a reinstall, which is deliberate.
+- **Uninstalling keeps `update-state.json` and `settings.json`**: they are kept along with the other user data (uninstalling does not clear `userData`). The "already prompted version" and the client settings therefore carry over after a reinstall, which is deliberate.
 
 ---
 
-## 8. Report template for problems
+## 11. Report template for problems
 
 ```
 【步骤】§3.1 关窗行为
@@ -504,7 +730,7 @@ The following are **known by design**, not bugs:
 
 ---
 
-## 9. Run the automated part first (can be done in parallel with GUI verification)
+## 12. Run the automated part first (can be done in parallel with GUI verification)
 
 Before GUI verification, confirm the automated part is green:
 
@@ -515,6 +741,20 @@ pnpm typecheck
 
 (The comment means "build + all tests (including build-artifact assertions)".)
 
-Expected: `Tests passed`, typecheck exit code 0, and exactly 5 artifact files under `out\`.
+Expected: `Tests passed`, typecheck exit code 0, and exactly **9** artifact files under `out\`:
+
+```
+out/main/index.js
+out/preload/host.cjs
+out/preload/welcome.cjs
+out/preload/edit.cjs
+out/preload/settings.cjs
+out/renderer/offline.html
+out/renderer/welcome.html
+out/renderer/edit.html
+out/renderer/settings.html
+```
+
+This list is asserted **exactly** (not "at least"), and a second assertion checks that every page under `src/renderer/` and every preload under `src/preload/` is registered in `electron.vite.config.ts`'s **explicit** entry list — that config is not a glob, so an unregistered page is skipped silently. That is not hypothetical: `settings.html` / `settings.cjs` were once missing from it, and 402 tests stayed green with typecheck exiting 0 while both artifacts were simply never built. The count went from 7 to 9 when they were added.
 
 That command caught two P0s in phase 1 (`out/renderer/` not being generated, the preload inlining the electron package), **which neither the unit tests nor the type check could catch** — so if you see anything odd around the build, `pnpm test` is the first sieve.
