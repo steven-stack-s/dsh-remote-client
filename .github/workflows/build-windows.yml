@@ -146,6 +146,51 @@ jobs:
           # 无限累积占用仓库的 Artifacts 配额；够取用即可。
           retention-days: 7
 
+      # Release 正文的来源：CHANGELOG.md 里该版本的 `### Highlights` 小节。
+      # 单独一步生成，是为了让「抽不到 Highlights」在日志里明确报警，
+      # 而不是悄悄发出一页没有版本信息的 Release（脚本细节见其文件头）。
+      - name: 生成 Release 正文（取 CHANGELOG 的 Highlights）
+        if: startsWith(github.ref, 'refs/tags/')
+        id: notes
+        shell: bash
+        run: |
+          # 版本号取自 tag（refs/tags/v0.2.5 → 0.2.5）；版本号的唯一来源是 package.json，
+          # 这里用 tag 与之匹配，两者不一致时抽不到 Highlights 会在日志报警。
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "tag: $GITHUB_REF_NAME → 版本: $VERSION"
+          # 正文落在 release/（已被 .gitignore 排除的构建产物区），
+          # 避免在仓库根留下一个未跟踪文件。
+          node scripts/extract-highlights.mjs "$VERSION" --out release/release-notes.md
+
+          # SHA256 与体积：安装包未做签名，下载者无从判断拿到的文件是否完整、
+          # 是否被替换过。给出这两项至少让「我下到的就是 CI 产出的那一份」可被自行核对。
+          # 这部分由 CI 实测值渲染，不能写进 CHANGELOG（那是人工维护的文本）。
+          {
+            echo
+            echo '---'
+            echo
+            echo '### 文件校验'
+            echo
+            echo '```'
+            echo "文件   ${{ steps.artifact.outputs.name }}"
+            echo "大小   ${{ steps.artifact.outputs.size }} 字节"
+            echo "SHA256 ${{ steps.artifact.outputs.sha256 }}"
+            echo '```'
+            echo
+            echo '下载后建议核对（PowerShell）：'
+            echo
+            echo '```powershell'
+            echo 'Get-FileHash .\DSH*setup.exe -Algorithm SHA256'
+            echo '```'
+            echo
+            echo '输出应与上面的 SHA256 一致。校验 SHA256 比 SmartScreen 的「未知发布者」'
+            echo '提示更可靠——安装包未做代码签名，那类提示是未签名 + 下载量少触发的信誉'
+            echo '警告，不是文件损坏（Chrome 选「保留」；Edge 选「更多信息」→「仍要运行」）。'
+          } >> release/release-notes.md
+
+          echo "===== release-notes.md ====="
+          cat release/release-notes.md
+
       - name: 发布到 GitHub Release（仅 tag 触发时）
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -155,50 +200,6 @@ jobs:
             release/*.exe
             release/*.blockmap
             release/latest.yml
+          # 提交列表附在正文之后，便于想深挖的人展开。
           generate_release_notes: true
-          body: |
-            ## 安装
-
-            下载下面的 `DSH.Remote.Client-*-setup.exe`，双击安装即可。
-
-            **不需要安装 Node、pnpm 或任何运行环境** —— Electron 运行时已打进安装包。
-
-            > 📦 本次发布还包含 `latest.yml` 与 `*.exe.blockmap` 两个文件。
-            > **它们不是给用户下载的**：`latest.yml` 记录最新版本号，`.blockmap`
-            > 让已装旧版的客户端只下载变化的部分。**请不要删除它们**——少了这两个
-            > 文件，自动更新就会失效或退化成整包重下。你只需要下载 exe。
-
-            ### 首次使用
-
-            1. 打开客户端，在「添加 dsh 主机」窗口填入你的 dsh 地址
-               （本机 Docker 部署填 `http://127.0.0.1:3080`）
-            2. 若使用局域网 IP 或域名，远端需先配置 `DSH_TRUSTED_HOSTS`，
-               或安装 `@xgone/dsh-remote` 认证插件
-            3. 关闭窗口 = 最小化到系统托盘（不是退出）；退出请用托盘菜单的「退出」
-
-            ### 文件校验
-
-            ```
-            文件   ${{ steps.artifact.outputs.name }}
-            大小   ${{ steps.artifact.outputs.size }} 字节
-            SHA256 ${{ steps.artifact.outputs.sha256 }}
-            ```
-
-            下载后建议核对（PowerShell）：
-
-            ```powershell
-            Get-FileHash .\DSH*setup.exe -Algorithm SHA256
-            ```
-
-            输出应与上面的 SHA256 一致。
-
-            > 这里用通配符而不是完整文件名，是为了让命令在任意版本下都能直接粘贴运行
-            > （版本号不必手改）。**文件内容与 SHA256 不受影响。**
-
-            > ⚠️ 安装包**未做代码签名**，Windows SmartScreen / 浏览器可能提示
-            > 「未知发布者」或「包含风险文件」。这不是文件损坏，而是未签名 + 下载量少
-            > 触发的信誉警告。Chrome 可在下载项上选「保留」；Edge / 系统提示选
-            > 「更多信息」→「仍要运行」。
-            >
-            > **校验 SHA256 是比这些提示更可靠的判断依据**——它确认你拿到的正是 CI
-            > 产出的那一份。
+          body_path: release/release-notes.md

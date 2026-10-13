@@ -5,6 +5,12 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
 > **发布方式**：推送 `v*` tag 触发 GitHub Actions 在 `windows-latest` 上构建并发布 Release（见 `.github/workflows/build-windows.yml`）。推 `main` 只产出 Artifacts、不创建 Release。版本号的唯一来源是 `package.json`。
+>
+> **`### Highlights` 小节会被抽成 GitHub Release 正文**（脚本 `scripts/extract-highlights.mjs`，由 workflow 调用）。因此每个**已发布**版本都必须有一个 `### Highlights`，只写**面向用户、无需读代码就能懂**的改动要点：
+>
+> - 写「用户看到什么变了」，不写根因、函数名、测试数、CI 过程——那些留在 `### Fixed` / `### Notes` 里。
+> - 一两句话为宜，用列表；指向安装包的读者只看得到这一节。
+> - 缺失时脚本会回退为通用文案并**在构建日志里报警**（不失败），但那样 Release 就退化成没有版本信息的通用页，属应避免的状态。
 
 ## [Unreleased]
 
@@ -20,6 +26,13 @@
 ## [0.2.5] - 2026-10-13
 
 按需求**重做「开新窗口」**，不再修补历史缺陷。
+
+### Highlights
+
+- **打开主机的方式现在由你在菜单里选**：托盘/菜单的主机列表里，每台主机有两个动作——「打开」在本窗口内替换打开，「新窗口打开」另开一个窗口并保留当前窗口。
+- **门户（NAS）里点 dsh 快捷方式，恒定在本窗口内打开**，不再出现「点了一下窗口没反应」。
+- **删掉了设置里的「跨主机跳转时开新窗口」开关**。它想用一个全局开关表达「这一次想怎样」，做不到；现在改由菜单每次显式选择，不再需要猜。
+- 升级后**原有设置不受影响**，无需迁移。
 
 ### Changed
 
