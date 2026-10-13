@@ -45,22 +45,42 @@ describe('hostMenuLabel', () => {
 })
 
 describe('hostMenuItemKinds', () => {
-  it('非当前主机：打开 / 重置登录态 / 删除', () => {
-    expect(hostMenuItemKinds(false, false)).toEqual(['open', 'resetLogin', 'remove'])
+  it('非当前主机：打开 / 新窗口打开 / 重置登录态 / 删除', () => {
+    expect(hostMenuItemKinds(false, false)).toEqual([
+      'open', 'openInNewWindow', 'resetLogin', 'remove',
+    ])
   })
 
   it('当前主机（在线）：加「重新加载」，但不加「立即重试」', () => {
-    expect(hostMenuItemKinds(true, false)).toEqual(['open', 'reload', 'resetLogin', 'remove'])
+    expect(hostMenuItemKinds(true, false)).toEqual([
+      'open', 'openInNewWindow', 'reload', 'resetLogin', 'remove',
+    ])
   })
 
   it('当前主机（离线）：同时有「重新加载」与「立即重试」', () => {
     expect(hostMenuItemKinds(true, true)).toEqual([
-      'open', 'reload', 'retryNow', 'resetLogin', 'remove',
+      'open', 'openInNewWindow', 'reload', 'retryNow', 'resetLogin', 'remove',
     ])
   })
 
   it('非当前主机即便 offline=true 也不出现重载/重试（避免对未打开窗口操作）', () => {
-    expect(hostMenuItemKinds(false, true)).toEqual(['open', 'resetLogin', 'remove'])
+    expect(hostMenuItemKinds(false, true)).toEqual([
+      'open', 'openInNewWindow', 'resetLogin', 'remove',
+    ])
+  })
+
+  it('「打开」与「新窗口打开」恒定成对、且紧挨着（task-20 的核心契约）', () => {
+    // 二者是同一个意图（去那台主机）的两种归宿：前者在当前窗口打开，后者另开一个。
+    // 分开列或漏掉任何一个，用户就没法表达「这一次想怎样」——而这正是删掉那个
+    // 全局设置项之后**唯一**的开新窗口入口。
+    for (const isCurrent of [true, false]) {
+      for (const offline of [true, false]) {
+        const kinds = hostMenuItemKinds(isCurrent, offline)
+        const i = kinds.indexOf('open')
+        expect(kinds[i + 1]).toBe('openInNewWindow')
+        expect(kinds.filter(k => k === 'openInNewWindow')).toHaveLength(1)
+      }
+    }
   })
 
   it('重置登录态与删除在任何组合下都必然存在（本次补齐的核心契约）', () => {
@@ -87,8 +107,12 @@ describe('hostMenuItemKinds', () => {
 describe('HOST_MENU_LABELS', () => {
   it('每个动作都有文案，且无多余键', () => {
     expect(Object.keys(HOST_MENU_LABELS).sort()).toEqual(
-      ['open', 'reload', 'remove', 'resetLogin', 'retryNow'].sort(),
+      ['open', 'openInNewWindow', 'reload', 'remove', 'resetLogin', 'retryNow'].sort(),
     )
+  })
+
+  it('新窗口打开的文案就是「新窗口打开」', () => {
+    expect(HOST_MENU_LABELS.openInNewWindow).toBe('新窗口打开')
   })
 
   it('删除项带省略号，表明会弹确认框', () => {

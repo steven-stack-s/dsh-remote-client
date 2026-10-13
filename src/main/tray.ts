@@ -42,8 +42,10 @@ export interface TrayDeps {
   getData: () => HostsFile
   /** 当前打开的主机 id。 */
   getCurrentId: () => string | undefined
-  /** 打开指定主机。 */
+  /** 打开指定主机——在**当前窗口**内（替换当前窗口）。 */
   openHost: (host: HostEntry) => void
+  /** 打开指定主机——**另开一个窗口**，保留当前窗口（多窗口并行）。 */
+  openHostInNewWindow: (host: HostEntry) => void
   /** 打开「添加主机」欢迎页。 */
   onAddHost: () => void
   /** 打开「编辑主机」窗口（初始目标取当前主机；窗口内可切换到别的主机）。 */
@@ -174,6 +176,7 @@ function hostSubmenu(deps: TrayDeps): MenuItemConstructorOptions[] {
     currentId: deps.getCurrentId(),
     offline: deps.isOffline(),
     openHost: host => { deps.openHost(host) },
+    openHostInNewWindow: host => { deps.openHostInNewWindow(host) },
     onReload: () => { deps.onReload() },
     onRetryNow: () => { deps.onRetryNow() },
     onResetLogin: host => { deps.onResetLogin(host) },

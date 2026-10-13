@@ -766,54 +766,68 @@ describe('matchesSettingsChord（task-19：Ctrl+, 的窗口内注册）', () => 
   })
 })
 
-describe('windowOpenDecision 的跨主机分流（task-19：仅跨主机跳转开新窗口）', () => {
+/**
+ * 页面里的链接该怎么分流（task-20 定稿）。
+ *
+ * ## 为什么不再有「跨主机就开新窗口」
+ *
+ * 用户明确要求：**在门户里点 dsh 的快捷方式要在本窗口内打开，不要新开窗口**。
+ * task-19 曾用一个设置项（`openInNewWindow`）控制这件事，但它引发了一连串难以
+ * 收敛的缺陷（开关开着时窗口被唤起却不导航、判定层加例外又把开关架空……），
+ * task-20 已把那个设置项删除。
+ *
+ * 「开新窗口」改为**多主机菜单里的显式动作**（每个主机项下有「打开」与「新窗口
+ * 打开」），因此页面里的链接只有一种归宿：当前窗口。
+ */
+describe('windowOpenDecision：页面里的链接一律在当前窗口打开（task-20）', () => {
   const portal = 'https://nas.oray.com'
   const dshA = 'https://dsh-a.example.com'
   const dshB = 'https://dsh-b.example.com'
   const known = [dshA, dshB]
 
-  const decide = (url: string, currentOrigin: string, openInNewWindow: boolean) =>
-    windowOpenDecision({ url, currentOrigin, knownHostOrigins: known, openInNewWindow })
+  const decide = (url: string, currentOrigin: string) =>
+    windowOpenDecision({ url, currentOrigin, knownHostOrigins: known })
 
-  it('缺省（不传该字段）→ 与显式 false 完全一致，即 task-18 的旧行为', () => {
-    const implicit = windowOpenDecision({ url: `${dshA}/`, currentOrigin: portal, knownHostOrigins: known })
-    expect(implicit).toBe('navigate-self')
-    expect(implicit).toBe(decide(`${dshA}/`, portal, false))
+  it('门户里点 dsh 图标 → 在当前窗口打开（用户明确要求：不要新开窗口）', () => {
+    // 真机场景：窗口承载 dshA，但页面被门户 302 到门户域并停住（登录后不回跳）。
+    // 用户在门户里点 dshA 的快捷方式，必须在**本窗口内**打开。
+    expect(decide(`${dshA}/`, portal)).toBe('navigate-self')
+    expect(decide(`${dshA}/session/1`, portal)).toBe('navigate-self')
   })
 
-  it('开关关 → 跨主机跳转仍是替换当前窗口', () => {
-    expect(decide(`${dshA}/`, portal, false)).toBe('navigate-self')
-    expect(decide(`${dshB}/session/1`, dshA, false)).toBe('navigate-self')
+  it('从一台主机点到另一台主机 → 同样在当前窗口打开', () => {
+    expect(decide(`${dshB}/session/1`, dshA)).toBe('navigate-self')
+    expect(decide(`${dshA}/`, dshB)).toBe('navigate-self')
   })
 
-  it('开关开 → 跨主机跳转开新窗口', () => {
-    expect(decide(`${dshA}/`, portal, true)).toBe('open-new-window')
-    expect(decide(`${dshB}/session/1`, dshA, true)).toBe('open-new-window')
+  it('站内链接留在原窗口（否则每个会话都弹一个新窗口）', () => {
+    expect(decide(`${dshA}/session/1`, dshA)).toBe('navigate-self')
+    expect(decide(`${portal}/desktop`, portal)).toBe('navigate-self')
   })
 
-  it('开关开 → **站内链接仍留在原窗口**（否则每个会话都弹一个新窗口）', () => {
-    expect(decide(`${dshA}/session/1`, dshA, true)).toBe('navigate-self')
-    expect(decide(`${portal}/desktop`, portal, true)).toBe('navigate-self')
+  it('真外链交给系统浏览器', () => {
+    expect(decide('https://github.com/x/y', dshA)).toBe('external')
   })
 
-  it('开关开 → 真外链仍交给系统浏览器', () => {
-    expect(decide('https://github.com/x/y', dshA, true)).toBe('external')
+  it('非 http(s) 被安全边界挡住', () => {
+    expect(decide('file:///etc/passwd', dshA)).toBe('external')
+    expect(decide('javascript:alert(1)', dshA)).toBe('external')
   })
 
-  it('开关开 → 非 http(s) 仍被安全边界挡住（不受开关影响）', () => {
-    expect(decide('file:///etc/passwd', dshA, true)).toBe('external')
-    expect(decide('javascript:alert(1)', dshA, true)).toBe('external')
-  })
-
-  it('开关开 → 非法 URL 仍 external', () => {
+  it('非法 URL → external', () => {
     for (const url of ['', '   ', 'not a url']) {
-      expect(decide(url, dshA, true)).toBe('external')
+      expect(decide(url, dshA)).toBe('external')
     }
   })
 
-  it('origin 规范化在跨主机判定里同样生效（大小写/默认端口不算不同主机）', () => {
-    // 不规范化会把同一个站点判成「另一台主机」→ 平白多开一个窗口。
-    expect(decide('https://DSH-A.example.com/x', dshA, true)).toBe('navigate-self')
-    expect(decide('https://dsh-a.example.com:443/x', dshA, true)).toBe('navigate-self')
+  it('origin 规范化生效（大小写/默认端口不算不同主机）', () => {
+    expect(decide('https://DSH-A.example.com/x', dshA)).toBe('navigate-self')
+    expect(decide('https://dsh-a.example.com:443/x', dshA)).toBe('navigate-self')
+  })
+
+  it('取不到当前页面 origin（空串）时站内那条不参与，但已配置主机仍走当前窗口', () => {
+    // 壳自有页面（离线页）是 `file://`，取不到 origin —— 不能因此把链接全判成外链。
+    expect(decide(`${dshA}/x`, '')).toBe('navigate-self')
+    expect(decide('https://github.com/x', '')).toBe('external')
   })
 })

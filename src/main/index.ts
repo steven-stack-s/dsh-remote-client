@@ -14,7 +14,7 @@ import {
   focusTargetFor,
   hostOpenEffect,
   isKnownHostWebContents,
-  shouldOpenNewHostWindow,
+  type HostOpenMode,
   type OpenHostWindowRef,
 } from './window-registry.js'
 import { hostIdFromOrigin } from './partitions.js'
@@ -434,21 +434,23 @@ let quitting = false
  * 用户**主动选择**一台主机时打开它（托盘的「主机列表」与菜单栏的「主机(H)」）。
  *
  * 与 {@link openHost} 的区别：那个是底层原语（「把这台主机的窗口弄出来并聚焦」），
- * 本函数在此之上按**用户的 `openInNewWindow` 设置**决定要不要保留当前窗口。
+ * 本函数在此之上落实**用户这次选的是哪种打开方式**：
+ * - 「打开」→ 替换当前窗口（`replace`）；
+ * - 「新窗口打开」→ 保留当前窗口，另开一个（`keep-open`）。
  *
- * 为什么要单独一层：`openInNewWindow` 最初只接在「页面里跨主机跳转」上，而用户
- * 实际用得最多的入口是托盘的主机列表——真机反馈「勾与不勾都是开新窗口」，正是
- * 因为那条路径没读这个设置。判定逻辑抽在 `window-registry.ts` 的
- * `hostOpenEffect()`（纯函数，有单测）。
+ * 「开新窗口」做成**菜单项**而非全局设置，是因为用户没法用一个设置表达「**这一次**
+ * 想怎样」；而那个设置项还会与页面里的链接互相干扰（task-20 已删除）。判定逻辑抽在
+ * `window-registry.ts` 的 `hostOpenEffect()`（纯函数，有单测）。
  *
  * @param host - 目标主机。
+ * @param mode - 用户在菜单里选的打开方式。
  */
-function openHostFromMenu(host: HostEntry): void {
+function openHostFromMenu(host: HostEntry, mode: HostOpenMode): void {
   const existing = hostWindows.get(host.id)
   const effect = hostOpenEffect({
     targetAlreadyOpen: existing !== undefined && !existing.win.isDestroyed(),
     currentHostId: lastFocusedHostId,
-    openInNewWindow: settingsData.openInNewWindow,
+    mode,
   })
 
   if (effect === 'focus') {
@@ -458,9 +460,9 @@ function openHostFromMenu(host: HostEntry): void {
   }
 
   if (effect === 'replace') {
-    // 关掉当前窗口再开目标——这是升级前的行为，也是设置关掉时的默认。
+    // 关掉当前窗口再开目标——这是「打开」这一项的含义。
     //
-    // 只关**当前那台**：多窗口下可能还开着别的（用户之前用新窗口选项开的），
+    // 只关**当前那台**：多窗口下可能还开着别的（用户之前用「新窗口打开」开的），
     // 那些不该被这次切换牵连。`destroy()` 不触发 close 事件，因此不会被
     // 「隐藏到托盘」的拦截挡住。
     const current = currentHostWindow()
@@ -478,36 +480,27 @@ function openHostFromMenu(host: HostEntry): void {
  * @param host - 目标主机。**必须是当前配置里的那份**（调用方从 `hostsData` 取），
  *   因为这里会把它交给窗口作为最新配置。
  */
-function openHost(host: HostEntry, options: { wantsNewWindow?: boolean } = {}): void {
+function openHost(host: HostEntry): void {
   // 该 host 已开 → 只更新配置并唤起，**绝不再建第二个窗口**。
   //
   // 这条不变量（同一 host 至多一个窗口）是必须的：同一个 origin 并存两个窗口
   // 会有两份 WebSocket 连到同一台 dsh，既浪费又会让页面状态互相打架——这正是
   // 原实现「切换主机时销毁旧窗口」想避免的事，多窗口化之后由它来保证。
   //
-  // ⚠️ 但「已开」的前提是那个窗口**现在还代不代表**这台主机：门户（绿联 UGOS
-  // 那类）会把页面 302 到它自己的域并停住、登录后不回跳，此时窗口显示的已经是
-  // 门户。若照样 `show()` 唤起，用户点了图标却什么都没发生（真机反馈）。
+  // ⚠️ 但「已开」不等于「它现在正显示着这台主机」：门户（绿联 UGOS 那类）会把
+  // 页面 302 到它自己的域并停住、登录后不回跳，此时窗口显示的已经是门户。
+  // 用户点「打开」的意图是**回到这台主机**，所以这里重新请求它的 origin——
+  // 否则只是把一个显示门户的窗口唤到前台，用户点了等于没点（真机反馈）。
   const existing = hostWindows.get(host.id)
   if (existing !== undefined && !existing.win.isDestroyed()) {
-    const openNew =
-      options.wantsNewWindow === true &&
-      shouldOpenNewHostWindow({
-        targetWindowExists: true,
-        existingWindowOnHostOrigin: existing.isOnHostOrigin(),
-      })
-    if (!openNew) {
-      // 窗口已存在时也要把最新配置交进去：它可能停在旧 token / 旧显示名上
-      // （窗口持有的是创建时那份快照，见 windows.ts 的 updateHost 说明）。
-      existing.updateHost(host)
-      lastFocusedHostId = host.id
-      existing.show()
-      refreshChrome()
-      return
-    }
-    // 让位：那个窗口的页面已被门户带走，不再代表这台主机。把它从注册表摘掉，
-    // 由下面的新建流程接管该 host 的登记位——不变量（至多一个窗口）依然成立。
-    hostWindows.delete(host.id)
+    if (!existing.isOnHostOrigin()) existing.reload()
+    // 窗口已存在时也要把最新配置交进去：它可能停在旧 token / 旧显示名上
+    // （窗口持有的是创建时那份快照，见 windows.ts 的 updateHost 说明）。
+    existing.updateHost(host)
+    lastFocusedHostId = host.id
+    existing.show()
+    refreshChrome()
+    return
   }
 
   lastFocusedHostId = host.id
@@ -536,10 +529,6 @@ function openHost(host: HostEntry, options: { wantsNewWindow?: boolean } = {}): 
     () => settingsData.hideOnClose,
     // 窗口内的 Ctrl+, 入口（Windows 上菜单栏不显示，只靠 application menu 会没反应）。
     () => { openSettingsWindow() },
-    // 跨主机跳转是否开新窗口——同样是现取的用户设置。
-    () => settingsData.openInNewWindow,
-    // 跨主机跳转的目标 URL → 开/唤起那台主机的窗口。
-    url => { openHostByUrl(url) },
   )
 
   hostWindows.set(host.id, handle)
@@ -559,45 +548,6 @@ function openHost(host: HostEntry, options: { wantsNewWindow?: boolean } = {}): 
     // 而清空会让「关掉 B 但 A 还开着」时丢掉用户上次的落点）。
     refreshChrome()
   })
-}
-
-/**
- * 按 URL 打开它对应的那台已配置主机（task-19：「跨主机跳转开新窗口」的落点）。
- *
- * 由 `windows.ts` 的 `openNewWindow` 回调传入，触发时机是「页面 `window.open` 了
- * 一个指向**另一台已配置主机**的地址，且用户开了新窗口选项」。
- *
- * **只认已配置主机的 origin**：URL 的路径与查询被丢弃（窗口总是从 `host.origin`
- * 干净加载）。这是刻意的——token 之类的凭据不该经 URL 传递（见 `hosts.ts` 关于
- * origin 必须纯净的说明），而 dsh 是 SPA，具体到哪个会话由它自己恢复。
- *
- * 找不到对应主机时**什么都不做**：判定层（`windowOpenDecision`）已经保证只有
- * 「∈ 已知主机」的地址才会走到这里；真找不到说明配置在两次判定之间被改了，
- * 此时静默忽略比硬开一个未配置的窗口安全。
- *
- * @param url - 页面请求打开的地址。
- */
-function openHostByUrl(url: string): void {
-  let origin: string
-  try {
-    origin = normalizeOrigin(url)
-  } catch {
-    // 非法地址：判定层不会放它过来，这里只是不让异常冒到 Electron 的事件回调里。
-    return
-  }
-
-  const host = hostsData.hosts.find(h => h.origin === origin)
-  if (host === undefined) return
-
-  // 复用 `openHost` 而不是自己建窗口：这样自动命中「同一 host 至多一个窗口」
-  // 这条不变量——那台主机若已经开着，这里只会把它唤到前台，而不是并存两个窗口
-  // （两份 WebSocket 连同一台 dsh）。这也正是本路径不用 Electron `allow` 的原因。
-  //
-  // `wantsNewWindow: true` 表达的是**这条路径的语义**（用户开了「跨主机跳转时开
-  // 新窗口」）：若该主机的窗口已被门户带走（页面不在它的 origin 上），就让位、
-  // 真开一个新窗口，而不是去唤起一个显示门户的窗口。开关**关**时根本走不到这里
-  // （判定层给的是 `navigate-self`），所以这个 true 不会越权。
-  openHost(host, { wantsNewWindow: true })
 }
 
 /**
@@ -767,7 +717,8 @@ function installTray(): void {
       onQuit: () => { app.quit() },
       getData: () => hostsData,
       getCurrentId: () => getCurrentHostId(),
-      openHost: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host) },
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host, 'same-window') },
+      openHostInNewWindow: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host, 'new-window') },
       onAddHost: () => { openWelcomeWindow() },
       onEditCurrentHost: () => { openEditCurrentHost() },
       onReload: () => { currentHostWindow()?.reload() },
@@ -792,7 +743,8 @@ function installAppMenuBar(): void {
     appMenu = installAppMenu({
       getData: () => hostsData,
       getCurrentId: () => getCurrentHostId(),
-      openHost: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host) },
+      openHost: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host, 'same-window') },
+      openHostInNewWindow: host => { void persist(touchHost(hostsData, host.id)); openHostFromMenu(host, 'new-window') },
       onAddHost: () => { openWelcomeWindow() },
       onReload: () => { currentHostWindow()?.reload() },
       isOffline: () => currentHostWindow()?.isOffline() ?? false,

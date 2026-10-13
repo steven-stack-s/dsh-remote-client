@@ -216,19 +216,21 @@ function installContentWindowBehavior(
  * 给一个 webContents 装上「新窗口」策略。
  *
  * **一律 `deny`**，然后由我们自己做该做的事：
- * - 目标是**当前站点** → 在当前窗口 `loadURL`（站点内部跳转，替换原窗口）；
- * - 目标是**另一台已配置主机** → 视用户设置：关则替换当前窗口，开则调
- *   `onOpenNewWindow` 由主进程开一个新主机窗口（task-19）；
+ * - 目标是**当前站点**或**任一已配置主机** → 在当前窗口 `loadURL`
+ *   （站点内部跳转、门户里点 dsh 图标，都替换原窗口）；
  * - 其余（真外链、`mailto:`、自定义 scheme）→ 交给系统浏览器。
+ *
+ * ## 为什么页面里的链接一律在当前窗口打开（task-20 起）
+ *
+ * 用户明确要求「在门户里点 dsh 的快捷方式要在本窗口内打开」。以前那条「跨主机
+ * 跳转可开新窗口」的设置项已被删除——它引发了一连串难以收敛的缺陷（开关开着时
+ * 窗口被唤起却不导航、开关被架空等等）。「开新窗口」改为在**多主机菜单**里由
+ * 用户显式选择，不再由页面链接触发。因此本策略没有「另开一个主机窗口」的分支：
+ * 页面里的链接只有当前窗口这一个归宿。
  *
  * 为什么用 `deny` 而不是 `allow`：`allow` 只会让 Electron 另开一个窗口，做不到
  * 「替换当前窗口」；而且 task-15 那套「子窗口继承 partition」的复杂度（重挂标题、
  * 菜单栏、快捷键、递归接管）也就随之而来。
- *
- * task-19 的「开新窗口」**也没有改用 `allow`**：那条路径同样返回 `deny`，由
- * 主进程经 `onOpenNewWindow` 自己建窗口。这样做的好处是能直接复用 `openHost()`
- * ——从而命中「同一 host 至多一个窗口」这条不变量；用 `allow` 会绕过它，同一台
- * 主机可能并存两个窗口（两份 WebSocket 连同一台 dsh）。
  *
  * **`deny` 的代价（已逐条评估）**：`window.open()` 会返回 `null`。
  * - 页面若写成 `const w = window.open(url); if (!w) location.href = url`，那么除
@@ -246,23 +248,17 @@ function installContentWindowBehavior(
  * 刻意**不做**「延迟一拍再导航」之类的规避：那会让最终生效的变成**页面**自己那次
  * 导航，时序反而更难预测；立即导航的结果是确定的。
  *
- * ⚠️ task-19 起本策略**可能返回 `open-new-window`**，因此上面 `did-create-window`
- * 那条路径**不再是死代码**——但它仍然不会被这里的 `deny` 触发（我们自己建窗口，
- * 不经 Electron）。那段 `installContentWindowBehavior` 目前用于**孙窗口**：
- * 我们建出的新主机窗口，其页面如果再 `window.open`，仍按本策略处理。
+ * 本策略不返回「另开窗口」，因此 `createHostWindow` 里那条 `did-create-window`
+ * 路径**不是**为它准备的：那段 `installContentWindowBehavior` 用于**孙窗口**——
+ * 我们建出的新主机窗口，其页面若再 `window.open`，仍按本策略处理。
  *
  * @param contents - 目标 webContents。
  * @param getKnownHostOrigins - 取「已配置主机 origin 列表」的函数（主进程注入）。
- * @param getOpenInNewWindow - 取「跨主机跳转是否开新窗口」这一用户设置的函数。
- *   **传函数而非布尔值**：窗口长期存活，用户随时可能在设置里改掉它。
- * @param onOpenNewWindow - 需要开新主机窗口时的回调（主进程注入）。
- *   缺省时不处理——退化为「替换当前窗口」，即 task-18 的旧行为。
+ *   **传函数而非数组快照**：窗口存活期间主机可能被增删改。
  */
 function installWindowOpenPolicy(
   contents: WebContents,
   getKnownHostOrigins: () => readonly string[],
-  getOpenInNewWindow: () => boolean = () => false,
-  onOpenNewWindow: ((url: string) => void) | undefined = undefined,
 ): void {
   contents.setWindowOpenHandler(({ url }) => {
     const decision = windowOpenDecision({
@@ -271,7 +267,6 @@ function installWindowOpenPolicy(
       // 那台主机的地址了，用 `host.origin` 会把站点内跳转全判成外链。
       currentOrigin: currentOriginOf(contents),
       knownHostOrigins: getKnownHostOrigins(),
-      openInNewWindow: getOpenInNewWindow(),
     })
 
     if (decision === 'navigate-self') {
@@ -283,20 +278,6 @@ function installWindowOpenPolicy(
         // 拒绝——那不是错误，只是「页面自己已经导航过去了」。
         void contents.loadURL(url).catch(() => undefined)
       }
-      return { action: 'deny' }
-    }
-
-    if (decision === 'open-new-window') {
-      // 跨主机跳转且用户开了「新窗口打开」。
-      //
-      // **仍然返回 `deny`**，由主进程自己建窗口（`onOpenNewWindow`），而不是
-      // 交给 Electron 的 `allow`。理由有两条：
-      // 1. `allow` 建出的窗口由 Electron 代管，我们要在 `did-create-window` 里
-      //    再补 partition / preload / 标题 / 菜单栏——那套复杂度正是 task-18
-      //    用 `deny` 甩掉的东西；
-      // 2. 我们自己建才能直接走 `openHost()`，从而命中「同一 host 至多一个窗口」
-      //    这条不变量（用 `allow` 会绕过它，同一台主机并存两个窗口）。
-      if (onOpenNewWindow !== undefined) onOpenNewWindow(url)
       return { action: 'deny' }
     }
 
@@ -359,7 +340,8 @@ export interface HostWindowHandle {
    *
    * 门户（绿联 UGOS 那类）会把页面 302 到它自己的域并停住、登录后不回跳。此时
    * 窗口虽然仍以这台主机的 id 登记着，实际显示的已经不是这台主机了。`openHost()`
-   * 据此决定「复用这个窗口」还是「让它让位、另开一个」（见 `shouldOpenNewHostWindow`）。
+   * 据此决定「直接唤起这个窗口」还是「先重新请求它的 origin」——后者才是用户点
+   * 「打开」时想要的（回到这台主机），否则只是把一个显示门户的窗口唤到前台。
    *
    * **刻意不是**「Map 里登记过没有」：登记只说明它**曾经**是这台主机的窗口。
    */
@@ -430,10 +412,6 @@ function titlebarOverlayOptions(): TitlebarOverlayOptions {
  *   之后已开的窗口仍旧按旧设置行事，看起来就像设置没生效。
  * @param onOpenSettings - 打开「客户端设置」窗口。挂在窗口内快捷键上，因为
  *   Windows 上无边框窗口不显示菜单栏（见 `matchesSettingsChord` 的说明）。
- * @param getOpenInNewWindow - 取「跨主机跳转是否开新窗口」这一用户设置的函数。
- *   同样传函数：窗口长期存活，用户随时可能改。
- * @param onOpenNewWindow - 需要为新主机开窗口时的回调（主进程注入）。**缺省时
- *   退化为「替换当前窗口」**，即 task-18 的旧行为。
  * @returns 窗口句柄，调用方据此控制重试与查询状态。
  */
 export function createHostWindow(
@@ -444,8 +422,6 @@ export function createHostWindow(
   isQuitting: () => boolean = () => false,
   getHideOnClose: () => boolean = () => true,
   onOpenSettings: () => void = () => undefined,
-  getOpenInNewWindow: () => boolean = () => false,
-  onOpenNewWindow: ((url: string) => void) | undefined = undefined,
 ): HostWindowHandle {
   // 主机配置是**可变状态**，不是闭包里的快照。下面所有 `host.*` 读取的都是
   // 这个变量，因此 `updateHost()` 之后立即生效。
@@ -555,20 +531,19 @@ export function createHostWindow(
   // 2. task-15：改成一律 `allow` 并让子窗口继承 partition —— 能开了，但开成了
   //    **新窗口**，且外链也被留在客户端里；
   // 3. task-18：按「是不是我们认识的地址」分流，内部链接替换当前窗口；
-  // 4. task-19（当前）：站内链接仍旧替换；**跨主机**跳转按用户设置，可开成新窗口。
-  installWindowOpenPolicy(
-    win.webContents,
-    getKnownHostOrigins,
-    getOpenInNewWindow,
-    onOpenNewWindow,
-  )
+  // 4. task-19：给跨主机跳转加了个「开新窗口」的**设置开关**——它引发了一连串
+  //    难以收敛的缺陷（开关开着时窗口被唤起却不导航、开关被架空……）；
+  // 5. task-20（当前）：**删掉那个开关**。页面里的链接一律在本窗口内打开；
+  //    「开新窗口」改为多主机菜单里的显式动作（见 `host-menu-state.ts`）。
+  installWindowOpenPolicy(win.webContents, getKnownHostOrigins)
 
-  // 仍然不可达（`deny` 从不触发它），但**理由变了**：task-19 的「开新窗口」也走
-  // `deny` + 主进程 `openHost()`，因此 Electron 依旧不替我们建窗口。
+  // 自 task-18 起本策略一律 `deny`，因此 Electron 从不替我们建窗口，这条
+  // `did-create-window` 平时不会被触发。
   //
-  // 保留它是为了**孙窗口**：我们建出的新主机窗口，其页面若再 `window.open`，
-  // 仍由 `installWindowOpenPolicy` 处理（那个窗口是正常建出来的，策略照旧生效）。
-  // 若将来改用 `allow` 建窗口，这段立刻成为新窗口的接管入口，行为已就位。
+  // 保留它是为了**孙窗口**：我们建出的新主机窗口（多主机菜单的「新窗口打开」），
+  // 其页面若再 `window.open`，仍由 `installWindowOpenPolicy` 处理（那个窗口是
+  // 正常建出来的，策略照旧生效）。若将来改用 `allow` 建窗口，这段立刻成为新窗口
+  // 的接管入口，行为已就位。
   //
   // 传取值函数而不是当前的 host 值：子窗口存活期间主机可能被重命名。
   win.webContents.on('did-create-window', child => {

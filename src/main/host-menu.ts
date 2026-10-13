@@ -25,8 +25,10 @@ export interface HostMenuActions {
   currentId: string | undefined
   /** 当前主机是否离线。 */
   offline: boolean
-  /** 打开该主机。 */
+  /** 打开该主机——**在当前窗口内**（替换当前窗口）。 */
   openHost: (host: HostEntry) => void
+  /** 打开该主机——**另开一个窗口**，保留当前窗口（多窗口并行）。 */
+  openHostInNewWindow: (host: HostEntry) => void
   /** 重新加载当前主机。 */
   onReload: () => void
   /** 立即重试当前主机。 */
@@ -50,8 +52,10 @@ export interface HostListInput {
   currentId: string | undefined
   /** 当前主机是否离线。 */
   offline: boolean
-  /** 打开该主机。 */
+  /** 打开该主机——**在当前窗口内**（替换当前窗口）。 */
   openHost: (host: HostEntry) => void
+  /** 打开该主机——**另开一个窗口**，保留当前窗口（多窗口并行）。 */
+  openHostInNewWindow: (host: HostEntry) => void
   /** 重新加载当前主机。 */
   onReload: () => void
   /** 立即重试当前主机。 */
@@ -79,6 +83,8 @@ function toMenuItem(
   switch (kind) {
     case 'open':
       return { label, click: () => { actions.openHost(host) } }
+    case 'openInNewWindow':
+      return { label, click: () => { actions.openHostInNewWindow(host) } }
     case 'reload':
       return { label, click: () => { actions.onReload() } }
     case 'retryNow':
@@ -130,6 +136,7 @@ export function buildHostListItems(input: HostListInput): MenuItemConstructorOpt
       currentId: input.currentId,
       offline: input.offline,
       openHost: input.openHost,
+      openHostInNewWindow: input.openHostInNewWindow,
       onReload: input.onReload,
       onRetryNow: input.onRetryNow,
       onResetLogin: input.onResetLogin,

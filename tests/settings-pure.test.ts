@@ -120,30 +120,27 @@ describe('每个设置都必须有真实的消费点（防「存下来了却没�
       'startupBehavior',
       'hideOnClose',
       'updateCheckEnabled',
-      'openInNewWindow',
     ] as const) {
       expect(source, `设置 ${field} 在 index.ts 里没有任何消费点`).toContain(`settingsData.${field}`)
     }
   })
 })
 
-describe('openInNewWindow（task-19：跨主机跳转开新窗口）', () => {
-  it('默认 false —— 沿用 task-18 的既有行为，升级后用户感觉不到变化', () => {
-    expect(DEFAULT_SETTINGS.openInNewWindow).toBe(false)
+/**
+ * task-20 删掉的设置项必须有测试拦着，防止它被无意中加回来。
+ *
+ * 「跨主机跳转时开新窗口」这个开关引发了一连串难以收敛的缺陷：用户没法表达
+ * 「这一次想怎样」，而页面里的链接又拿它当判据，两边互相干扰。用户明确要求删除。
+ * 现在「开新窗口」是多主机菜单里的**显式动作**（见 `host-menu-state.ts`）。
+ */
+describe('已删除的设置项不得回归', () => {
+  it('ClientSettings 里没有 openInNewWindow', () => {
+    expect('openInNewWindow' in DEFAULT_SETTINGS).toBe(false)
   })
 
-  it('可以设为 true', () => {
-    expect(normalizeSettings({ openInNewWindow: true }).openInNewWindow).toBe(true)
-  })
-
-  it('类型不符 → 回退默认（不是「非 0 即真」那种宽松解析）', () => {
-    expect(normalizeSettings({ openInNewWindow: 'yes' }).openInNewWindow).toBe(false)
-    expect(normalizeSettings({ openInNewWindow: 1 }).openInNewWindow).toBe(false)
-  })
-
-  it('缺字段（旧设置文件）→ 补默认，不影响其它字段', () => {
+  it('旧设置文件里的 openInNewWindow 被忽略，且不影响同文件里的其它字段', () => {
     const result = normalizeSettings({ notifyEnabled: false, openInNewWindow: true })
     expect(result.notifyEnabled).toBe(false)
-    expect(result.openInNewWindow).toBe(true)
+    expect('openInNewWindow' in result).toBe(false)
   })
 })

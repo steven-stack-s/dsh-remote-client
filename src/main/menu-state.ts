@@ -548,11 +548,14 @@ export function shouldRemoveWindowMenuBar(platform: string): boolean {
 /**
  * 页面发起打开新窗口时，该怎么处理。
  *
- * `'open-new-window'` 是 task-19 新增的：指向**另一台已配置主机**的链接按用户
- * 设置开成新窗口（多主机并行）。站内链接永远走 `'navigate-self'`——否则在 dsh
- * 里点任何一个会话都会弹出一个新窗口。
+ * 只有两种归宿：留在**当前窗口**（`'navigate-self'`），或交给**系统浏览器**
+ * （`'external'`）。
+ *
+ * task-19 曾有过第三种 `'open-new-window'`（按设置把跨主机链接开成新窗口），
+ * task-20 已删除：那个开关引发了一连串难以收敛的缺陷，用户明确要求「页面里的
+ * 链接一律在本窗口内打开」。「开新窗口」改为在多主机菜单里**显式选择**。
  */
-export type WindowOpenDecision = 'navigate-self' | 'open-new-window' | 'external'
+export type WindowOpenDecision = 'navigate-self' | 'external'
 
 /**
  * 安全地解析 URL。
@@ -608,30 +611,33 @@ function comparableOrigin(value: string): string | undefined {
  * 2. 非 `http:`/`https:`（`mailto:`、`tel:`、自定义 scheme、`file:`、`javascript:`）
  *    → `external`。**`file:`/`javascript:` 属于安全边界**：远端页面不该借我们的手
  *    在应用内打开本地文件或执行脚本；
- * 3. 目标 origin === `currentOrigin` → **`navigate-self`**：站点内部跳转。这一条
- *    **先于**「跨主机」判定，因为站内链接无论开关如何都不该开新窗口——否则在 dsh
- *    里点任何一个会话都会弹出一个新窗口；
- * 4. 目标 origin ∈ `knownHostOrigins` → 这是**跨主机跳转**（门户里的 dsh 图标、
- *    或从 A 主机跳到 B 主机）：
- *    - 开关**关** → `navigate-self`（task-18 的既有行为：替换当前窗口）；
- *    - 开关**开** → `open-new-window`（task-19：多主机并行）；
+ * 3. 目标 origin === `currentOrigin` → **`navigate-self`**：站点内部跳转；
+ * 4. 目标 origin ∈ `knownHostOrigins` → **`navigate-self`**：这是**已配置的主机**
+ *    （门户里的 dsh 图标、或从 A 主机跳到 B 主机），一律在**当前窗口**打开；
  * 5. 其余 → `external`：真正的外链（GitHub 等）交给默认浏览器。
  *
- * **为什么第 3 条必须排在第 4 条前面**：一台主机的 origin 同时满足「∈ 已配置
- * 主机」和「=== currentOrigin」（它当然在配置里，而用户正在用它）。若先判第 4 条，
- * 站内链接会被判成「跨主机」并开新窗口——这正是「每个会话都弹一个窗口」的成因。
+ * ## 为什么页面里的链接一律在当前窗口打开（task-20 起）
  *
- * **门户场景（页面被 302 带走）也在第 4 条**，但**不能靠在判定层加例外来解决**：
- * 那样会把开关架空（开与关都变成替换当前窗口）。正确解法在 `openHost()` —— 它
- * 发现「该主机的窗口已被门户带走」时让位给新窗口，见 `shouldOpenNewHostWindow`。
+ * 用户明确要求：**在门户里点 dsh 的快捷方式要在本窗口内打开，不要新开窗口**。
+ * 这条以前由设置项「跨主机跳转时开新窗口」控制，但那个开关带来了一连串难以收敛
+ * 的缺陷（开关开时窗口被唤起却不导航、把开关架空等等），已被删除。
+ *
+ * 现在「开新窗口」不再由页面链接触发，而是**用户在多主机菜单里显式选择**：
+ * 每个主机项下有「打开」（本窗口内）与「新窗口打开」（另开一个）两个动作，
+ * 见 `host-menu-state.ts` 的 `HostMenuItemKind`。页面里的链接因此只有一种归宿：
+ * 当前窗口。
+ *
+ * **为什么第 3 条必须排在第 4 条前面**：一台主机的 origin 同时满足「∈ 已配置
+ * 主机」和「=== currentOrigin」（它当然在配置里，而用户正在用它）。两条都指向
+ * `navigate-self`，顺序其实已不影响结果——保留这个次序是为了让「站内优先」这层
+ * 语义在日后有人往第 4 条加分支时仍然显式可见。
  *
  * `currentOrigin` 传空串表示**取不到当前页面 origin**（还没提交任何导航、或者当前
  * 是壳自有的 `file://` 页面如离线页）。此时第 3 条不参与判定——不能因为「取不到」
  * 就把所有链接都当成站内链接。
  *
  * @param input - 判定输入。
- * @returns `'navigate-self'` 在当前窗口导航，`'open-new-window'` 另开一个主机窗口，
- *   `'external'` 交给系统浏览器。
+ * @returns `'navigate-self'` 在当前窗口导航，`'external'` 交给系统浏览器。
  */
 export function windowOpenDecision(input: {
   /** 页面请求打开的地址。 */
@@ -640,15 +646,6 @@ export function windowOpenDecision(input: {
   currentOrigin: string
   /** 已配置主机的 origin 列表（由主进程注入，见 `createHostWindow`）。 */
   knownHostOrigins: readonly string[]
-  /**
-   * 用户设置：跨主机跳转是否开新窗口。
-   *
-   * **可选、缺省 false**（与本模块其它「宁可必填」的地方刻意不同）：
-   * 缺省值恰好等于 task-18 的既有行为，而钉住那个行为的既有断言本来就不传本字段
-   * ——让它们原样通过，比改写更能证明兼容。且 `false` 是安全默认：用户没要求时
-   * 宁可替换当前窗口，也不要开出一堆窗口。
-   */
-  openInNewWindow?: boolean
 }): WindowOpenDecision {
   const parsed = safeUrl(input.url)
   if (parsed === undefined) return 'external'
@@ -662,16 +659,11 @@ export function windowOpenDecision(input: {
   const current = input.currentOrigin === '' ? undefined : comparableOrigin(input.currentOrigin)
   if (current !== undefined && current === target) return 'navigate-self'
 
-  // 第 4 条：跨主机跳转（含「窗口承载的那台主机，但页面已被门户带走」）。
-  //
-  // 这里**刻意不额外判「目标是不是本窗口所属的主机」**：曾经加过那样一条，
-  // 结果是开关被架空——用户明确要求「开关对门户里点 dsh 图标同样生效」
-  // （开=新窗口 / 关=当前窗口）。门户场景的正确解法在**下游**：`openHost()` 发现
-  // 「已有窗口的页面已被带走」时让位给新窗口，见 `shouldOpenNewHostWindow`。
+  // 第 4 条：已配置的主机（含「窗口承载的那台主机，但页面已被门户带走」）——
+  // 同样在当前窗口打开。门户登录后不回跳时页面停在门户域上，走的正是这一条；
+  // 导航到目标 origin 会把当前窗口带进 dsh，这正是用户要的行为。
   for (const origin of input.knownHostOrigins) {
-    if (comparableOrigin(origin) === target) {
-      return input.openInNewWindow === true ? 'open-new-window' : 'navigate-self'
-    }
+    if (comparableOrigin(origin) === target) return 'navigate-self'
   }
 
   return 'external'

@@ -19,8 +19,10 @@ export interface AppMenuDeps {
   getData: () => HostsFile
   /** 当前打开的主机 id。 */
   getCurrentId: () => string | undefined
-  /** 打开指定主机。 */
+  /** 打开指定主机——在**当前窗口**内（替换当前窗口）。 */
   openHost: (host: HostEntry) => void
+  /** 打开指定主机——**另开一个窗口**，保留当前窗口（多窗口并行）。 */
+  openHostInNewWindow: (host: HostEntry) => void
   /** 打开「添加主机」欢迎页。 */
   onAddHost: () => void
   /** 重新加载当前主机（供主机子菜单与 Ctrl+R 使用；「编辑(E)」中已无重复入口）。 */
@@ -149,6 +151,7 @@ export function installAppMenu(deps: AppMenuDeps): AppMenuHandle {
       currentId,
       offline,
       openHost: h => { deps.openHost(h) },
+      openHostInNewWindow: h => { deps.openHostInNewWindow(h) },
       onReload: () => { deps.onReload() },
       onRetryNow: () => { deps.onRetryNow() },
       onResetLogin: h => { deps.onResetLogin(h) },

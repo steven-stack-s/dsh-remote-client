@@ -3,7 +3,6 @@ import {
   focusTargetFor,
   hostOpenEffect,
   isKnownHostWebContents,
-  shouldOpenNewHostWindow,
 } from '../src/main/window-registry.js'
 
 /**
@@ -65,36 +64,32 @@ describe('focusTargetFor（Review Focus #2：唤起哪一台）', () => {
   })
 })
 
-describe('hostOpenEffect（#2：托盘切换主机时开新窗口还是替换当前窗口）', () => {
-  it('该主机已开着 → 无论设置如何都只是唤起它（不得并存两个窗口）', () => {
+describe('hostOpenEffect（task-20：打开方式由菜单项决定，不再是全局设置）', () => {
+  it('该主机已开着 → 无论选的哪种方式都只是唤起它（不得并存两个窗口）', () => {
     // 「同一 host 至多一个窗口」是硬不变量：同一个 origin 两份 WebSocket
     // 连同一台 dsh 既浪费又会互相打架。
-    expect(hostOpenEffect({
-      targetAlreadyOpen: true,
-      currentHostId: 'a',
-      openInNewWindow: true,
-    })).toBe('focus')
-
-    expect(hostOpenEffect({
-      targetAlreadyOpen: true,
-      currentHostId: 'a',
-      openInNewWindow: false,
-    })).toBe('focus')
+    for (const mode of ['same-window', 'new-window'] as const) {
+      expect(hostOpenEffect({
+        targetAlreadyOpen: true,
+        currentHostId: 'a',
+        mode,
+      })).toBe('focus')
+    }
   })
 
-  it('目标不是当前主机 + 开了新窗口选项 → 保留当前窗口（另开一个）', () => {
+  it('「新窗口打开」→ 保留当前窗口，另开一个', () => {
     expect(hostOpenEffect({
       targetAlreadyOpen: false,
       currentHostId: 'a',
-      openInNewWindow: true,
+      mode: 'new-window',
     })).toBe('keep-open')
   })
 
-  it('目标不是当前主机 + 关掉选项 → 替换当前窗口（用户要的默认行为）', () => {
+  it('「打开」→ 替换当前窗口（在本窗口内打开）', () => {
     expect(hostOpenEffect({
       targetAlreadyOpen: false,
       currentHostId: 'a',
-      openInNewWindow: false,
+      mode: 'same-window',
     })).toBe('replace')
   })
 
@@ -102,55 +97,17 @@ describe('hostOpenEffect（#2：托盘切换主机时开新窗口还是替换当
     expect(hostOpenEffect({
       targetAlreadyOpen: true,
       currentHostId: 'a',
-      openInNewWindow: false,
+      mode: 'same-window',
     })).toBe('focus')
   })
 
-  it('没有当前主机（例如刚启动/刚删光）→ 不管设置都直接开，没有「替换」的对象', () => {
-    for (const openInNewWindow of [true, false]) {
+  it('没有当前主机（例如刚启动/刚删光）→ 不管选哪种都直接开，没有「替换」的对象', () => {
+    for (const mode of ['same-window', 'new-window'] as const) {
       expect(hostOpenEffect({
         targetAlreadyOpen: false,
         currentHostId: undefined,
-        openInNewWindow,
+        mode,
       })).toBe('keep-open')
     }
-  })
-})
-
-/**
- * 打开一台主机时，要不要**新开**一个窗口（而不是复用已有那个）。
- *
- * ## 这条来自门户场景的真机反馈
- *
- * 窗口承载主机 A，但页面一进去就被门户（绿联 UGOS）**302 到门户自己的域**并停住
- * ——登录后不回跳。此时「A 已有窗口」这个事实**不再成立**：那个窗口显示的是门户，
- * 不是 A。用户点门户里的 A 图标（设置里「跨主机跳转时开新窗口」为**开**）期望
- * 新开一个窗口进 A，而旧实现因为 Map 里还记着那个窗口，只把它 `show()` 唤起——
- * 窗口纹丝不动（这正是「点了没反应」的成因）。
- *
- * 判据是「那个窗口**现在还代不代表**这台主机」，而不是「Map 里登记过没有」。
- */
-describe('shouldOpenNewHostWindow（门户把页面带走后，旧窗口该让位）', () => {
-  it('目标主机还没有窗口 → 需要新开', () => {
-    expect(shouldOpenNewHostWindow({
-      targetWindowExists: false,
-      existingWindowOnHostOrigin: false,
-    })).toBe(true)
-  })
-
-  it('已有窗口且页面仍在该主机上 → 复用（唤起它，不新建）', () => {
-    // 「同一 host 至多一个窗口」是硬不变量：同一个 origin 并存两份 WebSocket
-    // 既浪费又会让页面状态互相打架。
-    expect(shouldOpenNewHostWindow({
-      targetWindowExists: true,
-      existingWindowOnHostOrigin: true,
-    })).toBe(false)
-  })
-
-  it('已有窗口但页面已被门户带走 → 新开（那个窗口不再代表这台主机）', () => {
-    expect(shouldOpenNewHostWindow({
-      targetWindowExists: true,
-      existingWindowOnHostOrigin: false,
-    })).toBe(true)
   })
 })

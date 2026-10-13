@@ -39,8 +39,9 @@ This client does the opposite: **the backend always stays remote**. The window l
 - **Multi-host management**: add / switch / rename / delete; each host gets its own isolated login state (per-partition). Several hosts can be **open at the same time** (one window each).
 - **Access without a plugin**: a dsh without the auth plugin can be reached with the launch token printed by `dsh web`.
 - **Offline self-healing**: when the host is unreachable the client shows an overlay page and retries with exponential backoff (1s→2s→…→30s), retrying immediately once the network recovers.
-- **Link routing**: links to a configured host open inside the client (optionally in a new window — see Client settings); external links go to the system browser.
-- **Client settings**: tray → "Client settings", or `Ctrl+,`. Covers the notification switch and quiet period, startup behaviour, whether closing hides to the tray, whether cross-host jumps open a new window, and update checks. Changes take effect **immediately**, no restart.
+- **Link routing**: links to a configured host **always open in the current window** (clicking a dsh icon on a portal likewise replaces the current window — no new window); external links go to the system browser.
+- **Client settings**: tray → "Client settings", or `Ctrl+,`. Covers the notification switch and quiet period, startup behaviour, whether closing hides to the tray, and update checks. Changes take effect **immediately**, no restart.
+- **Multi-host**: in the tray / menu host list every host offers two actions — "Open" (**inside the current window**, replacing it) and "Open in new window" (**spawns another window**, keeping the current one).
 - **Native notifications**: approval requests pop up **unconditionally** (they block your workflow); a message notification fires only once a reply has **genuinely stopped** and the window is unfocused. With several hosts the notification names **the host it came from**, and clicking it returns to that window.
 - **Tray**: host management and on/off both live here (on Windows the frameless window shows no menu bar — see Design highlights).
 - **Shortcuts**: `Ctrl+N` add host, `Ctrl+E` edit host, `Ctrl+,` client settings, `Ctrl+Q` quit, `Ctrl+R` reload the page, `Ctrl+Shift+I` / `F12` open DevTools (docked in framed windows; on Windows the host window is frameless, so it opens in a separate window — see Known limitations).
@@ -62,7 +63,6 @@ Tray → "Client settings", menu bar → "Edit(E) → Settings…", or `Ctrl+,`.
 | Quiet period for message notifications | 15s (range 15–300) | After a reply stops streaming, wait this long with no new output before notifying. Too short and "waiting on a slow tool" is mistaken for "finished". **Approval notifications ignore it** and always fire immediately |
 | On startup | Open the last host | Can be changed to always show the "Add host" page |
 | Hide to tray instead of quitting | on | When off, closing the window quits (on macOS this has no effect — that platform already keeps running when the last window closes) |
-| Open cross-host jumps in a new window | off | Switching hosts from the **tray / menu host list**, or clicking another dsh host on a portal: opens a new window instead of replacing the current one. **In-site navigation is unaffected** — opening a session stays in the current window |
 | Check for updates after startup | on | When off, the updater is not wired up at all |
 
 The update section also shows the **current version** and offers a "Check for updates now" button (in development the updater is not wired up, so the button is disabled with an explanation).

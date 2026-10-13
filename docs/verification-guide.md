@@ -290,6 +290,15 @@ When you click a link, the client routes it by "**is this target a site we alrea
 | Window title | Of the form `主机名 — 页面标题` (**prefixed with the host name**) |
 | Top of a content window (one opened by the page itself) | **No** menu bar (the menu bar only grows on host windows) |
 | Pressing `Ctrl+W` in a content window | Closes that window |
+| Tray/menu host list → "**Open**" on a host | That host opens **inside the current window** (replacing it) |
+| Tray/menu host list → "**Open in new window**" on a host | That host opens in **another window**, keeping the current one (parallel multi-host) |
+
+> **"New window" lives in the menu, not in page links**: links inside pages (including a
+> dsh icon on a portal) always open in the current window. To watch two hosts side by
+> side, use "Open in new window" in the host list — the intent is stated **per action**.
+> A single host never gets two windows (two WebSockets against the same dsh is both
+> wasteful and makes page state fight itself), so either action merely focuses a host
+> that is already open.
 
 > ⚠️ **A known semantic trade-off**: if some icon points at **another** host you have configured, the current window will load it, but the "current host" is still the original one — in that case clicking the menu's 「重新加载」 (Reload) pulls you back to the original host. Single-host setups are unaffected.
 
