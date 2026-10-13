@@ -149,6 +149,29 @@ async function waitForLog(dir: string, predicate: (text: string) => boolean): Pr
   return existsSync(file) ? readFile(file, 'utf8') : ''
 }
 
+/**
+ * 等一个条件成立；最多轮询约 2 秒。超时就返回，让断言去报错。
+ *
+ * ## 为什么需要它（一次真实 CI 失败）
+ *
+ * `fireDownloaded` 结尾用**固定次数**的 `setTimeout` 排空异步链（20×5ms）。那条链
+ * 包含 `readPromptedVersion` 的文件读取、`promptRestart` 里的 10ms 延时、以及
+ * `writePromptedVersion` 的落盘——在 CI 的 Windows runner 上，100ms 偶尔不够，
+ * 于是「不同版本并发」那条用例读到 `dialogs === 1` 并失败。
+ *
+ * 症状极具迷惑性：**本地全绿、同一 commit 的 main 构建也绿**，只有 tag 构建偶发红
+ * （发 0.2.5 时真的踩了一次）。固定 sleep 与慢机器天生不合，改成条件轮询：
+ * 条件一旦成立立即返回，真出 bug 时则超时后由断言报错——两种结局都不含糊。
+ *
+ * @param predicate - 条件。
+ */
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
+
 describe('更新器接线', () => {
   beforeEach(() => {
     fake.autoDownload = true
@@ -259,6 +282,9 @@ describe('更新器接线', () => {
 
     await Promise.all([fireDownloaded('2.0.0'), fireDownloaded('2.0.1')])
 
+    // 两个版本的链路各自要读盘、弹框（内含 10ms 延时）、写盘。等它们都走到
+    // 「弹过框」再断言——固定等待在 CI 的慢机器上会偶发读到 1（见 waitFor 的说明）。
+    await waitFor(() => dialogs >= 2)
     expect(dialogs).toBe(2)
   })
 
