@@ -1,6 +1,6 @@
 # dsh-remote-client
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | [Changelog](CHANGELOG.md) | [Docs index](docs/README.md)
 
 A desktop client that loads a remote dsh directly. The target backend is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) instance running on a server/NAS (for example, one deployed with [dsh-docker](https://github.com/steven-stack-s/dsh-docker)).
 
@@ -107,6 +107,9 @@ Reading the Chinese comments in that block: `pnpm test` = build + all tests (inc
 - Host renaming is already available: 「编辑(E)」 (Edit(E)) → 「编辑主机…」 (Edit Host…) lets you change the display name, the address and the launch token.
 - **On Windows the host window's DevTools opens in a separate window** (not docked). The host window is **frameless** (so the top bar can follow the app theme), and a frameless window cannot dock DevTools. **Verified on a real machine**: in a **framed** window (Client settings, Edit host, Add host) the same code docks DevTools normally. This is a deliberate trade-off — dropping the frameless style would dock DevTools but lose the themed top bar. On macOS / Linux the host window is framed, so DevTools docks as usual.
 - **The installer is not code-signed**, so end users will hit SmartScreen's "unknown publisher" prompt on first run (see below).
+
+> **What changed in each version, and why**: see the [Changelog](CHANGELOG.md). If you want to know which release first made some current behaviour behave the way it does, start there.
+> **Acceptance guide and docs index**: see [`docs/`](docs/README.md) (on-device verification steps and "what counts as a defect").
 
 ---
 

@@ -1,6 +1,6 @@
 # dsh-remote-client
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | [更新日志](CHANGELOG.md) | [文档索引](docs/README.md)
 
 直载远端 dsh 的桌面客户端。目标后端是跑在服务器/NAS 上的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 实例（例如 [dsh-docker](https://github.com/steven-stack-s/dsh-docker) 部署的）。
 
@@ -102,6 +102,9 @@ pnpm dev         # 启动客户端（需要图形环境）
 - 主机重命名已可用：「编辑(E)」→「编辑主机…」可改显示名、地址与 launch token。
 - **Windows 上主机窗口的 DevTools 会弹出独立窗口**（不是内嵌）。原因是主机窗口**无边框**（为了让顶部跟随应用主题），而无边框窗口无法停靠 DevTools。**已实测确认**：同一份代码在**有边框**的窗口（客户端设置、编辑主机、添加主机）里 DevTools 是内嵌的。这是一个**有意的取舍**——去掉无边框就能内嵌，但会牺牲顶部主题跟随。macOS / Linux 的主机窗口有边框，DevTools 正常内嵌。
 - **安装包未做代码签名**，最终用户首次运行会遇到 SmartScreen「未知发布者」提示（见下）。
+
+> **各版本改了什么、为什么**：见 [更新日志](CHANGELOG.md)。想知道某个当前行为是从哪个版本开始变成这样的，先查它。
+> **验收手册与文档索引**：见 [`docs/`](docs/README.md)（含真机验收步骤与「什么现象算缺陷」）。
 
 ---
 
